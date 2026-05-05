@@ -789,6 +789,7 @@ window.$colorbox = $colorbox;
 let $layerbox = $LayerBox();
 window.$layerbox = $layerbox;
 $layerbox.dock($right);
+$layerbox.show();
 
 // Install layer system hooks
 hookLayers();
