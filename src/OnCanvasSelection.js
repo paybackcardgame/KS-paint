@@ -5,6 +5,7 @@ import { OnCanvasObject } from "./OnCanvasObject.js";
 import { get_tool_by_id, make_or_update_undoable, undoable, update_helper_layer } from "./functions.js";
 import { $G, get_icon_for_tool, get_rgba_from_color, make_canvas, make_css_cursor, to_canvas_coords } from "./helpers.js";
 import { replace_colors_with_swatch } from "./image-manipulation.js";
+import { layerManager } from "./layers.js";
 import { TOOL_SELECT } from "./tools.js";
 
 class OnCanvasSelection extends OnCanvasObject {
@@ -67,6 +68,9 @@ class OnCanvasSelection extends OnCanvasObject {
 				}
 				this.canvas = make_canvas(this.source_canvas);
 			} else {
+				if (layerManager._initialized) {
+					layerManager.composite();
+				}
 				this.source_canvas = make_canvas(this.width, this.height);
 				this.source_canvas.ctx.drawImage(main_canvas, this.x, this.y, this.width, this.height, 0, 0, this.width, this.height);
 				this.canvas = make_canvas(this.source_canvas);
@@ -162,8 +166,15 @@ class OnCanvasSelection extends OnCanvasObject {
 	}
 	cut_out_background() {
 		const cutout = this.canvas;
-		// doc/this or canvas/cutout, either of those pairs would result in variable names of equal length which is nice :)
-		const canvasImageData = main_ctx.getImageData(this.x, this.y, this.width, this.height);
+		if (layerManager._initialized) {
+			layerManager.composite();
+		}
+		// Visible pixels for the floating selection come from the composite; the hole is punched in the active layer only.
+		const compositeImageData = main_ctx.getImageData(this.x, this.y, this.width, this.height);
+		const doc_ctx = layerManager.getPaintingCtx();
+		const punchImageData = layerManager._initialized
+			? doc_ctx.getImageData(this.x, this.y, this.width, this.height)
+			: compositeImageData;
 		const cutoutImageData = cutout.ctx.getImageData(0, 0, this.width, this.height);
 		// cutoutImageData is initialized with the shape to be cut out (whether rectangular or polygonal)
 		// and should end up as the cut out image data for the selection
@@ -181,14 +192,14 @@ class OnCanvasSelection extends OnCanvasObject {
 		for (let i = 0; i < cutoutImageData.data.length; i += 4) {
 			const in_cutout = cutoutImageData.data[i + 3] > 0;
 			if (in_cutout) {
-				cutoutImageData.data[i + 0] = canvasImageData.data[i + 0];
-				cutoutImageData.data[i + 1] = canvasImageData.data[i + 1];
-				cutoutImageData.data[i + 2] = canvasImageData.data[i + 2];
-				cutoutImageData.data[i + 3] = canvasImageData.data[i + 3];
-				canvasImageData.data[i + 0] = 0;
-				canvasImageData.data[i + 1] = 0;
-				canvasImageData.data[i + 2] = 0;
-				canvasImageData.data[i + 3] = 0;
+				cutoutImageData.data[i + 0] = compositeImageData.data[i + 0];
+				cutoutImageData.data[i + 1] = compositeImageData.data[i + 1];
+				cutoutImageData.data[i + 2] = compositeImageData.data[i + 2];
+				cutoutImageData.data[i + 3] = compositeImageData.data[i + 3];
+				punchImageData.data[i + 0] = 0;
+				punchImageData.data[i + 1] = 0;
+				punchImageData.data[i + 2] = 0;
+				punchImageData.data[i + 3] = 0;
 			} else {
 				cutoutImageData.data[i + 0] = 0;
 				cutoutImageData.data[i + 1] = 0;
@@ -196,7 +207,11 @@ class OnCanvasSelection extends OnCanvasObject {
 				cutoutImageData.data[i + 3] = 0;
 			}
 		}
-		main_ctx.putImageData(canvasImageData, this.x, this.y);
+		if (layerManager._initialized) {
+			doc_ctx.putImageData(punchImageData, this.x, this.y);
+		} else {
+			main_ctx.putImageData(punchImageData, this.x, this.y);
+		}
 		cutout.ctx.putImageData(cutoutImageData, 0, 0);
 		this.update_tool_transparent_mode();
 		// NOTE: in case you want to use the tool_transparent_mode
@@ -210,9 +225,12 @@ class OnCanvasSelection extends OnCanvasObject {
 		// and even if you do, if you do it after creating a selection, it still won't work,
 		// because you will have already *not cut out* the selection from the canvas
 		if (!transparency || tool_transparent_mode) {
-			main_ctx.drawImage(colored_cutout, this.x, this.y);
+			doc_ctx.drawImage(colored_cutout, this.x, this.y);
 		}
 
+		if (layerManager._initialized) {
+			layerManager.composite();
+		}
 		$G.triggerHandler("session-update"); // autosave
 		update_helper_layer();
 	}
@@ -298,7 +316,10 @@ class OnCanvasSelection extends OnCanvasObject {
 	}
 	draw() {
 		try {
-			main_ctx.drawImage(this.canvas, this.x, this.y);
+			layerManager.getPaintingCtx().drawImage(this.canvas, this.x, this.y);
+			if (layerManager._initialized) {
+				layerManager.composite();
+			}
 		} catch (_error) {
 			// ignore
 		}

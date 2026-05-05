@@ -1762,6 +1762,14 @@ function prevent_selection($el) {
 		) {
 			return;
 		}
+		// Layer panel: HTML5 drag-reorder, real <button>s, and draggable rows need native mousedown behavior.
+		if (
+			e.target instanceof HTMLButtonElement ||
+			e.target.closest(".layers-list") ||
+			e.target.closest("[draggable='true']")
+		) {
+			return;
+		}
 		if (e.button === 1) {
 			return; // allow middle-click scrolling
 		}
