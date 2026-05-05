@@ -6,7 +6,7 @@ import { OnCanvasTextBox } from "./OnCanvasTextBox.js";
 // import { get_language, localize } from "./app-localization.js";
 import { deselect, get_tool_by_id, meld_selection_into_canvas, meld_textbox_into_canvas, set_magnification, show_error_message, undoable, update_helper_layer } from "./functions.js";
 import { $G, E, get_icon_for_tool, get_icon_for_tools, get_rgba_from_color, make_canvas, make_css_cursor } from "./helpers.js";
-import { bresenham_dense_line, bresenham_line, copy_contents_within_polygon, draw_bezier_curve, draw_ellipse, draw_fill, draw_line, draw_line_strip, draw_noncontiguous_fill, draw_polygon, draw_quadratic_curve, draw_rounded_rectangle, draw_selection_box, get_circumference_points_for_brush, replace_colors_with_swatch, stamp_brush_canvas, update_brush_for_drawing_lines } from "./image-manipulation.js";
+import { bresenham_dense_line, bresenham_line, copy_contents_within_polygon, draw_bezier_curve, draw_ellipse, draw_fill, draw_fill_separately, draw_line, draw_line_strip, draw_noncontiguous_fill, draw_polygon, draw_quadratic_curve, draw_rounded_rectangle, draw_selection_box, get_circumference_points_for_brush, replace_colors_with_swatch, stamp_brush_canvas, update_brush_for_drawing_lines } from "./image-manipulation.js";
 import { $ChooseShapeStyle, $choose_airbrush_size, $choose_brush, $choose_eraser_size, $choose_magnification, $choose_stroke_size, $choose_transparent_mode } from "./tool-options.js";
 
 // This is for linting stuff at the bottom.
@@ -555,8 +555,26 @@ const tools = [{
 				name: localize("Fill With Color"),
 				icon: get_icon_for_tool(this),
 			}, () => {
-				// Perform a normal fill operation
-				draw_fill(ctx, x, y, fill_color);
+				if (
+					window.ks_fill_sample_all &&
+					typeof fill_color === "string" &&
+					window.layerManager?._initialized
+				) {
+					const sample = window.layerManager.getCompositeSampleCanvas();
+					const fill_rgba = get_rgba_from_color(fill_color);
+					draw_fill_separately(
+						sample.ctx,
+						ctx,
+						x,
+						y,
+						fill_rgba[0],
+						fill_rgba[1],
+						fill_rgba[2],
+						fill_rgba[3],
+					);
+				} else {
+					draw_fill(ctx, x, y, fill_color);
+				}
 			});
 		}
 	},

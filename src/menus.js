@@ -1,6 +1,6 @@
 // @ts-check
 /* global tool_transparent_mode:writable, palette:writable, show_font_box:writable */
-/* global $canvas_area, $colorbox, $status_area, $toolbox, available_languages, get_iso_language_name, get_language, get_language_emoji, get_language_endonym, localize, magnification, main_canvas, menu_bar, MENU_DIVIDER, redos, selection, set_language, show_grid, show_thumbnail, systemHooks, textbox, undos */
+/* global $canvas_area, $colorbox, $layerbox, $status_area, $toolbox, available_languages, get_iso_language_name, get_language, get_language_emoji, get_language_endonym, localize, magnification, main_canvas, menu_bar, MENU_DIVIDER, redos, selection, set_language, show_grid, show_thumbnail, systemHooks, textbox, undos */
 // import { available_languages, get_iso_language_name, get_language, get_language_emoji, get_language_endonym, localize, set_language } from "./app-localization.js";
 import { OnCanvasTextBox } from "./OnCanvasTextBox.js";
 import { show_edit_colors_window } from "./edit-colors.js";
@@ -432,6 +432,19 @@ const menus = {
 				check: () => $status_area.is(":visible"),
 			},
 			description: localize("Shows or hides the status bar."),
+		},
+		{
+			label: "La&yers",
+			speech_recognition: [
+				"toggle layers", "toggle layer panel", "toggle layer box", "toggle layers panel",
+			],
+			checkbox: {
+				toggle: () => {
+					$layerbox.toggle();
+				},
+				check: () => $layerbox.is(":visible"),
+			},
+			description: "Shows or hides the layers panel.",
 		},
 		{
 			label: localize("T&ext Toolbar"),

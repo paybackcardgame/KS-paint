@@ -5,6 +5,9 @@
 
 import { $ColorBox } from "./$ColorBox.js";
 import { $ToolBox } from "./$ToolBox.js";
+import { $LayerBox } from "./$LayerBox.js";
+import { layerManager } from "./layers.js";
+import { getPaintingCtx, hookLayers } from "./layer-hooks.js";
 import { Handles } from "./Handles.js";
 // import { get_direction, localize } from "./app-localization.js";
 import { default_palette, get_winter_palette } from "./color-data.js";
@@ -782,6 +785,22 @@ window.$toolbox = $toolbox;
 let $colorbox = $ColorBox($("body").hasClass("vertical-color-box-mode"));
 window.$colorbox = $colorbox;
 
+// KS-Paint: Layer panel
+let $layerbox = $LayerBox();
+window.$layerbox = $layerbox;
+$layerbox.dock($right);
+
+// Install layer system hooks
+hookLayers();
+
+// Initialize layers once the canvas is ready
+setTimeout(() => {
+	if (!layerManager._initialized) {
+		layerManager.init();
+		$G.triggerHandler("layers-init");
+	}
+}, 100);
+
 $G.on("vertical-color-box-mode-toggled", () => {
 	// Destroy and recreate the color box because it uses a constructor parameter
 	// for this state and this handles re-docking to the correct edge
@@ -1353,16 +1372,16 @@ update_palette_from_theme();
 
 // #endregion
 
-function update_fill_and_stroke_colors_and_lineWidth(selected_tool) {
-	main_ctx.lineWidth = stroke_size;
+function update_fill_and_stroke_colors_and_lineWidth(selected_tool, ctx = main_ctx) {
+	ctx.lineWidth = stroke_size;
 
 	const reverse_because_fill_only = !!(selected_tool.$options && selected_tool.$options.fill && !selected_tool.$options.stroke);
 	/** @type {ColorSelectionSlot} */
 	const color_k =
 		(ctrl && selected_colors.ternary && pointer_active) ? "ternary" :
 			((reverse !== reverse_because_fill_only) ? "background" : "foreground");
-	main_ctx.fillStyle = fill_color =
-		main_ctx.strokeStyle = stroke_color =
+	ctx.fillStyle = fill_color =
+		ctx.strokeStyle = stroke_color =
 		selected_colors[color_k];
 
 	/** @type {ColorSelectionSlot} */
@@ -1381,21 +1400,26 @@ function update_fill_and_stroke_colors_and_lineWidth(selected_tool) {
 				stroke_color_k = "foreground";
 			}
 		}
-		main_ctx.fillStyle = fill_color = selected_colors[fill_color_k];
-		main_ctx.strokeStyle = stroke_color = selected_colors[stroke_color_k];
+		ctx.fillStyle = fill_color = selected_colors[fill_color_k];
+		ctx.strokeStyle = stroke_color = selected_colors[stroke_color_k];
 	}
 	pick_color_slot = fill_color_k;
 }
 
 // #region Primary Canvas Interaction
 function tool_go(selected_tool, event_name) {
-	update_fill_and_stroke_colors_and_lineWidth(selected_tool);
+	const ctx = getPaintingCtx();
+	update_fill_and_stroke_colors_and_lineWidth(selected_tool, ctx);
 
 	if (selected_tool[event_name]) {
-		selected_tool[event_name](main_ctx, pointer.x, pointer.y);
+		selected_tool[event_name](ctx, pointer.x, pointer.y);
 	}
 	if (selected_tool.paint) {
-		selected_tool.paint(main_ctx, pointer.x, pointer.y);
+		selected_tool.paint(ctx, pointer.x, pointer.y);
+	}
+	if (ctx !== main_ctx) {
+		layerManager.composite();
+		update_helper_layer();
 	}
 }
 function canvas_pointer_move(e) {
@@ -1681,9 +1705,14 @@ $canvas.on("pointerdown", (e) => {
 			// don't create undoables if you're two-finger-panning
 			// @TODO: do any tools use pointerup for cleanup?
 			if (!no_undoable) {
+				const paintingCtx = getPaintingCtx();
 				selected_tools.forEach((selected_tool) => {
-					selected_tool.pointerup?.(main_ctx, pointer.x, pointer.y);
+					selected_tool.pointerup?.(paintingCtx, pointer.x, pointer.y);
 				});
+				if (paintingCtx !== main_ctx) {
+					layerManager.composite();
+					update_helper_layer();
+				}
 			}
 
 			if (selected_tools.length === 1) {
@@ -1747,6 +1776,7 @@ prevent_selection($app);
 prevent_selection($toolbox);
 // prevent_selection($toolbox2);
 prevent_selection($colorbox);
+prevent_selection($layerbox);
 // #endregion
 
 // Stop drawing (or dragging or whatever) if you Alt+Tab or whatever
