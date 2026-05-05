@@ -69,12 +69,12 @@ class LayerManager {
 		const w = main_canvas.width;
 		const h = main_canvas.height;
 
-		// Create the three default layers (bottom to top)
+		// Create the three default layers (bottom → top: Sketch, Color, Outline)
+		const sketch  = new Layer("sketch",  "Sketch",  w, h);
 		const color   = new Layer("color",   "Color",   w, h);
 		const outline = new Layer("outline", "Outline", w, h);
-		const sketch  = new Layer("sketch",  "Sketch",  w, h);
 
-		this.layers = [color, outline, sketch]; // bottom → top
+		this.layers = [sketch, color, outline];
 		this.activeLayer = sketch;
 
 		// Copy whatever is already on main_canvas into the active layer
@@ -121,18 +121,31 @@ class LayerManager {
 	setActive(id) {
 		const layer = this.getLayer(id);
 		if (layer) {
+			// Solo hides every non‑solo layer in composite(); strokes would land on buffers that aren't drawn.
+			for (const l of this.layers) {
+				l.solo = false;
+			}
+			layer.visible = true;
 			this.activeLayer = layer;
+			if (this._initialized) {
+				this.composite();
+			}
 			this._notify();
 		}
 	}
 
 	toggleVisibility(id) {
 		const layer = this.getLayer(id);
-		if (layer) {
-			layer.visible = !layer.visible;
-			this.composite();
-			this._notify();
+		if (!layer) {
+			return;
 		}
+		// Don't bypass the layer you're painting on (would look like drawing stopped working).
+		if (layer.visible && layer === this.activeLayer) {
+			return;
+		}
+		layer.visible = !layer.visible;
+		this.composite();
+		this._notify();
 	}
 
 	toggleSolo(id) {
@@ -172,7 +185,7 @@ class LayerManager {
 
 	/**
 	 * After undo/redo restores a flat main_canvas, rebuild layer buffers so they match that image.
-	 * Puts the document on the bottom (Color) layer and clears upper layers.
+	 * Flattens into the bottom stack layer (Sketch) and clears layers above.
 	 */
 	absorbFlatMainIntoStack() {
 		if (!this._initialized) return;
@@ -203,9 +216,9 @@ class LayerManager {
 		main_ctx.fillStyle = "#ffffff";
 		main_ctx.fillRect(0, 0, w, h);
 
-		// Composite bottom → top
+		// Composite bottom → top (always draw activeLayer so edits stay visible even if bypass was toggled earlier).
 		for (const layer of this.layers) {
-			if (!this.isEffectivelyVisible(layer)) continue;
+			if (!this.isEffectivelyVisible(layer) && layer !== this.activeLayer) continue;
 			main_ctx.globalAlpha = layer.opacity;
 			main_ctx.drawImage(layer.canvas, 0, 0);
 		}
@@ -226,7 +239,7 @@ class LayerManager {
 		tctx.fillRect(0, 0, w, h);
 
 		for (const layer of this.layers) {
-			if (!this.isEffectivelyVisible(layer)) continue;
+			if (!this.isEffectivelyVisible(layer) && layer !== this.activeLayer) continue;
 			tctx.globalAlpha = layer.opacity;
 			tctx.drawImage(layer.canvas, 0, 0);
 		}
