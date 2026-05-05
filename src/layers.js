@@ -93,6 +93,17 @@ class LayerManager {
 		return this.activeLayer?.ctx ?? main_ctx;
 	}
 
+	/**
+	 * Context for committing strokes (matches tool_go / pointerup painting target).
+	 * @returns {CanvasRenderingContext2D}
+	 */
+	getPaintingCtx() {
+		if (!this._initialized || !this.activeLayer || this.activeLayer.locked) {
+			return main_ctx;
+		}
+		return this.activeLayer.ctx;
+	}
+
 	/** Returns true if any layer has solo turned on */
 	hasSolo() {
 		return this.layers.some(l => l.solo);

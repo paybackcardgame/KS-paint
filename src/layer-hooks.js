@@ -20,10 +20,7 @@ let _hooked = false;
  * @returns {CanvasRenderingContext2D}
  */
 export function getPaintingCtx() {
-	if (layerManager._initialized && layerManager.activeLayer && !layerManager.activeLayer.locked) {
-		return layerManager.activeLayer.ctx;
-	}
-	return main_ctx;
+	return layerManager.getPaintingCtx();
 }
 
 export function hookLayers() {

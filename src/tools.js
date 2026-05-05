@@ -7,6 +7,7 @@ import { OnCanvasTextBox } from "./OnCanvasTextBox.js";
 import { deselect, get_tool_by_id, meld_selection_into_canvas, meld_textbox_into_canvas, set_magnification, show_error_message, undoable, update_helper_layer } from "./functions.js";
 import { $G, E, get_icon_for_tool, get_icon_for_tools, get_rgba_from_color, make_canvas, make_css_cursor } from "./helpers.js";
 import { bresenham_dense_line, bresenham_line, copy_contents_within_polygon, draw_bezier_curve, draw_ellipse, draw_fill, draw_fill_separately, draw_line, draw_line_strip, draw_noncontiguous_fill, draw_polygon, draw_quadratic_curve, draw_rounded_rectangle, draw_selection_box, get_circumference_points_for_brush, replace_colors_with_swatch, stamp_brush_canvas, update_brush_for_drawing_lines } from "./image-manipulation.js";
+import { layerManager } from "./layers.js";
 import { $ChooseShapeStyle, $choose_airbrush_size, $choose_brush, $choose_eraser_size, $choose_magnification, $choose_stroke_size, $choose_transparent_mode } from "./tool-options.js";
 
 // This is for linting stuff at the bottom.
@@ -477,7 +478,7 @@ const tools = [{
 			name: get_language().match(/^en\b/) ? (this.color_eraser_mode ? "Color Eraser" : "Eraser") : localize("Eraser/Color Eraser"),
 			icon: get_icon_for_tool(this),
 		}, () => {
-			this.render_from_mask(main_ctx);
+			this.render_from_mask(layerManager.getPaintingCtx());
 
 			this.mask_canvas = null;
 		});
@@ -1364,10 +1365,11 @@ tools.forEach((tool) => {
 			tool.shape_canvas = make_canvas(main_canvas.width, main_canvas.height);
 		};
 		tool.paint = () => {
+			const paint_ctx = layerManager.getPaintingCtx();
 			tool.shape_canvas.ctx.clearRect(0, 0, tool.shape_canvas.width, tool.shape_canvas.height);
-			tool.shape_canvas.ctx.fillStyle = main_ctx.fillStyle;
-			tool.shape_canvas.ctx.strokeStyle = main_ctx.strokeStyle;
-			tool.shape_canvas.ctx.lineWidth = main_ctx.lineWidth;
+			tool.shape_canvas.ctx.fillStyle = paint_ctx.fillStyle;
+			tool.shape_canvas.ctx.strokeStyle = paint_ctx.strokeStyle;
+			tool.shape_canvas.ctx.lineWidth = paint_ctx.lineWidth;
 			tool.shape(tool.shape_canvas.ctx, pointer_start.x, pointer_start.y, pointer.x - pointer_start.x, pointer.y - pointer_start.y);
 			const signed_width = pointer.x - pointer_start.x || 1;
 			const signed_height = pointer.y - pointer_start.y || 1;
@@ -1380,7 +1382,7 @@ tools.forEach((tool) => {
 				name: tool.name,
 				icon: get_icon_for_tool(tool),
 			}, () => {
-				main_ctx.drawImage(tool.shape_canvas, 0, 0);
+				layerManager.getPaintingCtx().drawImage(tool.shape_canvas, 0, 0);
 				tool.shape_canvas = null;
 			});
 		};
@@ -1419,7 +1421,7 @@ tools.forEach((tool) => {
 				name: tool.name,
 				icon: get_icon_for_tool(tool),
 			}, () => {
-				tool.render_from_mask(main_ctx);
+				tool.render_from_mask(layerManager.getPaintingCtx());
 
 				tool.mask_canvas.width = 1;
 				tool.mask_canvas.height = 1;
@@ -1515,7 +1517,7 @@ tools.forEach((tool) => {
 				name: tool.name,
 				icon: get_icon_for_tool(tool),
 			}, () => {
-				tool.render_from_mask(main_ctx);
+				tool.render_from_mask(layerManager.getPaintingCtx());
 
 				tool.mask_canvas.width = 1;
 				tool.mask_canvas.height = 1;
