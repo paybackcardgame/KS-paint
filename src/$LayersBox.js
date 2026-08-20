@@ -715,7 +715,7 @@ function $LayersBox() {
 		title: "Delete layer",
 		"aria-label": "Delete layer",
 	}).addClass("layer-delete-button").html(DELETE_SVG).on("click", () => run_layer_action("Delete Layer", () => delete_layer())));
-	$buttons.append($lock, $merge, $new, $duplicate, $delete);
+	$buttons.append($lock, $merge, $duplicate, $new, $delete);
 	$content.append($opacity_bar, $list, $buttons);
 
 	$opacity.on("input", () => {
