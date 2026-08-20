@@ -20,6 +20,7 @@ const TEMPLATE_DB_NAME = "jspaint-templates";
 const TEMPLATE_DB_VERSION = 1;
 const TEMPLATE_STORE = "templates";
 const DEFAULT_TEMPLATE_KEY = "default";
+const BUNDLED_DEFAULT_TEMPLATE_URL = new URL("../templates/default.jspaint-template", import.meta.url);
 
 /** Bumped when a file/session load should win over a still-running File > New / first-open template apply. */
 let default_template_apply_generation = 0;
@@ -379,6 +380,26 @@ async function load_default_template() {
 }
 
 /**
+ * Loads the site-wide starter template bundled with the app.
+ * A template saved by the user in IndexedDB still takes precedence.
+ * @returns {Promise<object | null>}
+ */
+async function load_bundled_default_template() {
+	try {
+		const response = await fetch(BUNDLED_DEFAULT_TEMPLATE_URL);
+		if (!response.ok) {
+			throw new Error(`Template request failed with status ${response.status}.`);
+		}
+		const template = await response.json();
+		assert_template(template);
+		return template;
+	} catch (error) {
+		console.warn("The bundled default template could not be loaded.", error);
+		return null;
+	}
+}
+
+/**
  * Used by File > New and first-open. Returns true if a default template was applied.
  * Aborts if a file or session image is opened while this is still loading.
  * @returns {Promise<boolean>}
@@ -386,7 +407,7 @@ async function load_default_template() {
 async function apply_default_template_or_blank() {
 	const generation = ++default_template_apply_generation;
 	try {
-		const template = await load_default_template();
+		const template = await load_default_template() || await load_bundled_default_template();
 		if (generation !== default_template_apply_generation) {
 			return false;
 		}
