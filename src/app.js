@@ -1,28 +1,39 @@
 // @ts-check
 // eslint-disable-next-line no-unused-vars
-/* global airbrush_size:writable, brush_shape:writable, brush_size:writable, button:writable, ctrl:writable, eraser_size:writable, fill_color:writable, pick_color_slot:writable, history_node_to_cancel_to:writable, MenuBar:writable, my_canvas_height:writable, my_canvas_width:writable, palette:writable, pencil_size:writable, pointer:writable, pointer_active:writable, pointer_buttons:writable, pointer_over_canvas:writable, pointer_previous:writable, pointer_start:writable, pointer_type:writable, pointers:writable, reverse:writable, shift:writable, stroke_color:writable, stroke_size:writable, update_helper_layer_on_pointermove_active:writable */
-/* global AccessKeys, current_history_node, default_airbrush_size, default_brush_shape, default_brush_size, default_canvas_height, default_canvas_width, default_eraser_size, default_magnification, default_pencil_size, default_stroke_size, enable_fs_access_api, file_name, get_direction, localize, magnification, main_canvas, main_ctx, return_to_tools, selected_colors, selected_tool, selected_tools, selection, systemHooks, textbox, transparency */
+/* global airbrush_size:writable, brush_shape:writable, brush_size:writable, button:writable, ctrl:writable, alt:writable, eraser_size:writable, fill_all_layers:writable, fill_color:writable, fill_replace_all:writable, pick_color_slot:writable, history_node_to_cancel_to:writable, MenuBar:writable, meta:writable, my_canvas_height:writable, my_canvas_width:writable, palette:writable, pencil_size:writable, pointer:writable, pointer_active:writable, pointer_buttons:writable, pointer_over_canvas:writable, pointer_previous:writable, pointer_start:writable, pointer_type:writable, pointers:writable, reverse:writable, selection_all_layers:writable, shift:writable, stroke_color:writable, stroke_size:writable, update_helper_layer_on_pointermove_active:writable, wand_all_layers:writable, wand_replace_all:writable */
+/* global AccessKeys, current_history_node, current_palette_id, default_airbrush_size, default_brush_shape, default_brush_size, default_canvas_height, default_canvas_width, default_eraser_size, default_magnification, default_pencil_size, default_stroke_size, enable_fs_access_api, file_name, get_direction, last_non_winter_palette_id, localize, magnification, main_canvas, return_to_tools, selected_colors, selected_tool, selected_tools, selection, systemHooks, textbox, transparency */
 
 import { $ColorBox } from "./$ColorBox.js";
+import { ensure_layers_box } from "./$LayersBox.js";
 import { $ToolBox } from "./$ToolBox.js";
-import { $LayerBox } from "./$LayerBox.js";
-import { layerManager } from "./layers.js";
-import { getPaintingCtx, hookLayers } from "./layer-hooks.js";
 import { Handles } from "./Handles.js";
 // import { get_direction, localize } from "./app-localization.js";
-import { default_palette, get_winter_palette } from "./color-data.js";
+import { apply_default_template_or_blank } from "./document-template.js";
 import { image_formats } from "./file-format-data.js";
-import { $this_version_news, cancel, change_some_url_params, change_url_param, clear, confirm_overwrite_capability, delete_selection, deselect, edit_copy, edit_cut, edit_paste, file_new, file_open, file_save, file_save_as, get_tool_by_id, get_uris, image_attributes, image_flip_and_rotate, image_invert_colors, image_stretch_and_skew, load_image_from_uri, make_or_update_undoable, open_from_file, paste, paste_image_from_file, redo, render_history_as_gif, reset_canvas_and_history, reset_file, reset_selected_colors, resize_canvas_and_save_dimensions, resize_canvas_without_saving_dimensions, save_as_prompt, select_all, select_tool, select_tools, set_magnification, show_document_history, show_error_message, show_news, show_resource_load_error_message, toggle_grid, undo, update_canvas_rect, update_disable_aa, update_helper_layer, update_magnified_canvas_size, view_bitmap, write_image_file } from "./functions.js";
+import { $this_version_news, apply_named_palette, cancel, change_some_url_params, change_url_param, clear, confirm_overwrite_capability, delete_selection, deselect, duplicate_layer_and_select_contents, duplicate_selection, edit_copy, edit_cut, edit_paste, get_tool_by_id, get_uris, invert_selection, load_image_from_uri, make_or_update_undoable, open_from_file, paste, paste_image_from_file, redo, remember_copied_selection_position, reset_canvas_and_history, reset_file, reset_selected_colors, resize_canvas_and_save_dimensions, resize_canvas_without_saving_dimensions, save_as_prompt, select_tool, select_tools, set_magnification, show_document_history, show_error_message, show_news, show_resource_load_error_message, undo, update_canvas_rect, update_disable_aa, update_helper_layer, update_magnified_canvas_size, write_image_file } from "./functions.js";
 import { show_help } from "./help.js";
 import { $G, E, TAU, get_file_extension, get_help_folder_icon, is_discord_embed, make_canvas, to_canvas_coords } from "./helpers.js";
-import { init_webgl_stuff, rotate } from "./image-manipulation.js";
+import { get_wand_threshold, init_webgl_stuff, rotate, set_wand_threshold } from "./image-manipulation.js";
+import { block_if_active_layer_locked, composite_layers, get_active_layer_context, resize_layer_stack } from "./layers.js";
 import { menus } from "./menus.js";
 import { showMessageBox } from "./msgbox.js";
+import { init_shortcut_settings, handle_menu_shortcut_event, is_recording_shortcut } from "./shortcut-settings.js";
 import { stopSimulatingGestures } from "./simulate-random-gestures.js";
 import { disable_speech_recognition, enable_speech_recognition, trace_and_sketch_stop } from "./speech-recognition.js";
+import {
+	handle_canvas_pointerdown_extras,
+	handle_selection_nudge,
+	handle_speedrun_keydown,
+	handle_speedrun_keyup,
+	init_speedrun_features,
+	DEFAULT_KEYMAP,
+	get_keymap,
+	save_keymap,
+} from "./speedrun-features.js";
 import { localStore } from "./storage.js";
 import { get_theme, set_theme } from "./theme.js";
-import { TOOL_AIRBRUSH, TOOL_BRUSH, TOOL_CURVE, TOOL_ELLIPSE, TOOL_ERASER, TOOL_LINE, TOOL_PENCIL, TOOL_POLYGON, TOOL_RECTANGLE, TOOL_ROUNDED_RECTANGLE, TOOL_SELECT, tools } from "./tools.js";
+import { $choose_fill_tolerance, $choose_wand_tolerance } from "./tool-options.js";
+import { TOOL_AIRBRUSH, TOOL_BRUSH, TOOL_CURVE, TOOL_ELLIPSE, TOOL_ERASER, TOOL_FILL, TOOL_FREE_FORM_SELECT, TOOL_LINE, TOOL_MAGIC_WAND, TOOL_MAGNIFIER, TOOL_PENCIL, TOOL_PICK_COLOR, TOOL_POLYGON, TOOL_RECTANGLE, TOOL_ROUNDED_RECTANGLE, TOOL_SELECT, tools } from "./tools.js";
 
 // #region Exports
 
@@ -528,6 +539,16 @@ const $status_position = $(E("div")).addClass("status-coordinates status-field i
 window.$status_position = $status_position;
 const $status_size = $(E("div")).addClass("status-coordinates status-field inset-shallow").appendTo($status_area);
 window.$status_size = $status_size;
+const $status_zoom = $(E("div")).addClass("status-zoom status-field inset-shallow").attr({
+	title: localize("Zoom"),
+	"aria-label": localize("Zoom"),
+}).appendTo($status_area);
+window.$status_zoom = $status_zoom;
+const update_status_zoom = () => {
+	$status_zoom.text(`${Math.round(magnification * 100)}%`);
+};
+update_status_zoom();
+$G.on("magnification-changed", update_status_zoom);
 
 // #region News Indicator
 const news_seen_key = "jspaint latest news seen";
@@ -570,7 +591,7 @@ const news_period_if_can_dismiss = 15 * day;
 const news_period_if_cannot_dismiss = 5 * day;
 const news_period = local_storage_unavailable ? news_period_if_cannot_dismiss : news_period_if_can_dismiss;
 if (Date.now() < Date.parse(latest_news_datetime) + news_period && news_seen !== latest_news_datetime) {
-	$status_area.append($news_indicator);
+	$news_indicator.insertBefore($status_zoom);
 }
 if ($news_indicator.text().includes("Bubblegum")) {
 	let bubbles_raf_id = -1;
@@ -768,6 +789,102 @@ for (const [menu_item, menu_item_element] of traverse_menu(menus["E&xtras"], ext
 }
 $("<style>").text(emoji_css).appendTo(menu_document.head);
 
+const $fill_tool_header_options = $(E("div")).addClass("fill-tool-header-options").attr({
+	hidden: "hidden",
+});
+const $fill_contiguous_checkbox = $(E("input")).attr({
+	type: "checkbox",
+	id: "fill-contiguous-checkbox",
+});
+const $fill_all_layers_checkbox = $(E("input")).attr({
+	type: "checkbox",
+	id: "fill-all-layers-checkbox",
+});
+$fill_tool_header_options.append(
+	$choose_fill_tolerance,
+	$fill_contiguous_checkbox,
+	$(E("label")).attr({ for: "fill-contiguous-checkbox" }).text("Contiguous"),
+	$fill_all_layers_checkbox,
+	$(E("label")).attr({ for: "fill-all-layers-checkbox" }).text("All layers"),
+);
+$(menu_bar.element).append($fill_tool_header_options);
+
+const sync_fill_tool_header_options = () => {
+	const fill_selected = selected_tools.some((tool) => tool.id === TOOL_FILL);
+	$fill_tool_header_options.prop("hidden", !fill_selected);
+	$fill_contiguous_checkbox.prop("checked", !fill_replace_all);
+	$fill_all_layers_checkbox.prop("checked", fill_all_layers);
+};
+$fill_contiguous_checkbox.on("change", () => {
+	fill_replace_all = !$fill_contiguous_checkbox.prop("checked");
+});
+$fill_all_layers_checkbox.on("change", () => {
+	fill_all_layers = $fill_all_layers_checkbox.prop("checked");
+});
+$G.on("tool-changed option-changed", sync_fill_tool_header_options);
+sync_fill_tool_header_options();
+
+const $wand_tool_header_options = $(E("div")).addClass("fill-tool-header-options").attr({
+	hidden: "hidden",
+});
+const $wand_contiguous_checkbox = $(E("input")).attr({
+	type: "checkbox",
+	id: "wand-contiguous-checkbox",
+});
+const $wand_all_layers_checkbox = $(E("input")).attr({
+	type: "checkbox",
+	id: "wand-all-layers-checkbox",
+});
+$wand_tool_header_options.append(
+	$choose_wand_tolerance,
+	$wand_contiguous_checkbox,
+	$(E("label")).attr({ for: "wand-contiguous-checkbox" }).text("Contiguous"),
+	$wand_all_layers_checkbox,
+	$(E("label")).attr({ for: "wand-all-layers-checkbox" }).text("All layers"),
+);
+$(menu_bar.element).append($wand_tool_header_options);
+
+const sync_wand_tool_header_options = () => {
+	const wand_selected = selected_tools.some((tool) => tool.id === TOOL_MAGIC_WAND);
+	$wand_tool_header_options.prop("hidden", !wand_selected);
+	$wand_contiguous_checkbox.prop("checked", !wand_replace_all);
+	$wand_all_layers_checkbox.prop("checked", wand_all_layers);
+};
+$wand_contiguous_checkbox.on("change", () => {
+	wand_replace_all = !$wand_contiguous_checkbox.prop("checked");
+});
+$wand_all_layers_checkbox.on("change", () => {
+	wand_all_layers = $wand_all_layers_checkbox.prop("checked");
+});
+$G.on("tool-changed option-changed", sync_wand_tool_header_options);
+sync_wand_tool_header_options();
+
+const $selection_tool_header_options = $(E("div")).addClass("fill-tool-header-options").attr({
+	hidden: "hidden",
+});
+const $selection_all_layers_checkbox = $(E("input")).attr({
+	type: "checkbox",
+	id: "selection-all-layers-checkbox",
+});
+$selection_tool_header_options.append(
+	$selection_all_layers_checkbox,
+	$(E("label")).attr({ for: "selection-all-layers-checkbox" }).text("All layers"),
+);
+$(menu_bar.element).append($selection_tool_header_options);
+
+const sync_selection_tool_header_options = () => {
+	const selection_tool_selected = selected_tools.some((tool) =>
+		tool.id === TOOL_SELECT || tool.id === TOOL_FREE_FORM_SELECT
+	);
+	$selection_tool_header_options.prop("hidden", !selection_tool_selected);
+	$selection_all_layers_checkbox.prop("checked", selection_all_layers);
+};
+$selection_all_layers_checkbox.on("change", () => {
+	selection_all_layers = $selection_all_layers_checkbox.prop("checked");
+});
+$G.on("tool-changed option-changed", sync_selection_tool_header_options);
+sync_selection_tool_header_options();
+
 // Electron menu integration
 if (window.is_electron_app) {
 	window.setMenus(menus);
@@ -784,23 +901,8 @@ window.$toolbox = $toolbox;
 
 let $colorbox = $ColorBox($("body").hasClass("vertical-color-box-mode"));
 window.$colorbox = $colorbox;
-
-// KS-Paint: Layer panel
-let $layerbox = $LayerBox();
-window.$layerbox = $layerbox;
-$layerbox.dock($right);
-$layerbox.show();
-
-// Install layer system hooks
-hookLayers();
-
-// Initialize layers once the canvas is ready
-setTimeout(() => {
-	if (!layerManager._initialized) {
-		layerManager.init();
-		$G.triggerHandler("layers-init");
-	}
-}, 100);
+const $layersbox = ensure_layers_box();
+window.$layersbox = $layersbox;
 
 $G.on("vertical-color-box-mode-toggled", () => {
 	// Destroy and recreate the color box because it uses a constructor parameter
@@ -958,33 +1060,43 @@ $G.on("keydown", (e) => {
 		return;
 	}
 
+	if (
+		pointer_active &&
+		selected_tool.id === TOOL_LINE &&
+		(e.key === "Meta" || e.code === "MetaLeft" || e.code === "MetaRight")
+	) {
+		meta = true;
+		selected_tools.forEach((selected_tool) => {
+			tool_go(selected_tool);
+		});
+		update_helper_layer();
+		e.preventDefault();
+		return;
+	}
+
+	if (textbox && (e.ctrlKey || e.metaKey) && !e.altKey) {
+		switch (e.key.toUpperCase()) {
+			case "A":
+			case "Z":
+			case "Y":
+			case "I":
+			case "B":
+			case "U":
+				return;
+		}
+	}
+
+	if (!is_recording_shortcut() && handle_menu_shortcut_event(e)) {
+		return;
+	}
+
 	// @TODO: preventDefault in all cases where the event is handled
 	// also, ideally check that modifiers *aren't* pressed
 	// probably best to use a library at this point!
 
 	if (selection) {
-		const nudge_selection = (delta_x, delta_y) => {
-			selection.x += delta_x;
-			selection.y += delta_y;
-			selection.position();
-		};
-		switch (e.key) {
-			case "ArrowLeft":
-				nudge_selection(-1, 0);
-				e.preventDefault();
-				break;
-			case "ArrowRight":
-				nudge_selection(+1, 0);
-				e.preventDefault();
-				break;
-			case "ArrowDown":
-				nudge_selection(0, +1);
-				e.preventDefault();
-				break;
-			case "ArrowUp":
-				nudge_selection(0, -1);
-				e.preventDefault();
-				break;
+		if (handle_selection_nudge(e)) {
+			return;
 		}
 	}
 
@@ -1030,73 +1142,24 @@ $G.on("keydown", (e) => {
 	} else if (
 		e.code === "NumpadAdd" ||
 		e.code === "NumpadSubtract" ||
-		// normal + and - keys
+		e.code === "Minus" ||
+		e.code === "Equal" ||
 		e.key === "+" ||
 		e.key === "-" ||
 		e.key === "="
 	) {
-		const plus = e.code === "NumpadAdd" || e.key === "+" || e.key === "=";
-		const minus = e.code === "NumpadSubtract" || e.key === "-";
-		const delta = Number(plus) - Number(minus); // const delta = +plus++ -minus--; // Δ = ±±±±
-
-		if (selection) {
-			selection.scale(2 ** delta);
-		} else {
-			if (selected_tool.id === TOOL_BRUSH) {
-				brush_size = Math.max(1, Math.min(brush_size + delta, 500));
-			} else if (selected_tool.id === TOOL_ERASER) {
-				eraser_size = Math.max(1, Math.min(eraser_size + delta, 500));
-			} else if (selected_tool.id === TOOL_AIRBRUSH) {
-				airbrush_size = Math.max(1, Math.min(airbrush_size + delta, 500));
-			} else if (selected_tool.id === TOOL_PENCIL) {
-				pencil_size = Math.max(1, Math.min(pencil_size + delta, 50));
-			} else if (
-				selected_tool.id === TOOL_LINE ||
-				selected_tool.id === TOOL_CURVE ||
-				selected_tool.id === TOOL_RECTANGLE ||
-				selected_tool.id === TOOL_ROUNDED_RECTANGLE ||
-				selected_tool.id === TOOL_ELLIPSE ||
-				selected_tool.id === TOOL_POLYGON
-			) {
-				stroke_size = Math.max(1, Math.min(stroke_size + delta, 500));
-			}
-
-			$G.trigger("option-changed");
-			if (button !== undefined && pointer) { // pointer may only be needed for tests
-				selected_tools.forEach((selected_tool) => {
-					tool_go(selected_tool);
-				});
-			}
-			update_helper_layer();
+		const plus = e.code === "NumpadAdd" || e.code === "Equal" || e.key === "+" || e.key === "=";
+		const minus = e.code === "NumpadSubtract" || e.code === "Minus" || e.key === "-";
+		if (plus !== minus) {
+			const new_scale = Math.max(0.5, Math.min(plus ? magnification * 2 : magnification / 2, 80));
+			const anchor = pointer ? { x: pointer.x, y: pointer.y } : undefined;
+			set_magnification(new_scale, anchor);
+			e.preventDefault();
 		}
-		e.preventDefault();
+		return;
+	} else if (handle_speedrun_keydown(e)) {
 		return;
 	} else if (e.ctrlKey || e.metaKey) {
-		if (textbox) {
-			switch (e.key.toUpperCase()) {
-				case "A":
-				case "Z":
-				case "Y":
-				case "I":
-				case "B":
-				case "U":
-					// Don't prevent the default. Allow text editing commands.
-					return;
-			}
-		}
-		// Ctrl+PageDown: zoom to 400%
-		// Ctrl+PageUp: zoom to 100%
-		// In Chrome and Firefox, these switch to the next/previous tab,
-		// but it's allowed to be overridden in fullscreen in Chrome.
-		if (e.key === "PageDown") {
-			set_magnification(4);
-			e.preventDefault();
-			return;
-		} else if (e.key === "PageUp") {
-			set_magnification(1);
-			e.preventDefault();
-			return;
-		}
 		switch (e.key.toUpperCase()) {
 			case ",": // "<" without Shift
 			case "<":
@@ -1114,78 +1177,48 @@ $G.on("keydown", (e) => {
 				if (e.shiftKey) {
 					redo();
 				} else {
-					undo();
+					return;
 				}
 				break;
 			case "Y":
-				// Ctrl+Shift+Y handled above
+				if (e.shiftKey) {
+					return;
+				}
 				redo();
 				break;
-			case "G":
-				if (e.shiftKey) {
-					render_history_as_gif();
-				} else {
-					toggle_grid();
-				}
-				break;
-			case "F":
-				// @ts-ignore (repeat doesn't exist on jQuery.Event, I guess, but this is fine)
-				if (!e.repeat && !e.originalEvent?.repeat) {
-					view_bitmap();
-				}
-				break;
-			case "O":
-				file_open();
-				break;
-			case "S":
-				if (e.shiftKey) {
-					file_save_as();
-				} else {
-					file_save();
-				}
-				break;
-			case "A":
-				select_all();
-				break;
 			case "I":
-				image_invert_colors();
-				break;
-			case "E":
-				image_attributes();
-				break;
-
-			// These shortcuts are mostly reserved by browsers,
-			// but they are allowed in Electron.
-			// The shortcuts are hidden in the menus (or changed) when not in Electron,
-			// to prevent accidental closing/refreshing.
-			// I'm supporting Alt+<shortcut> here (implicitly) as a workaround (and showing this in the menus in some cases).
-			// Also, note that Chrome allows some shortcuts to be overridden in fullscreen (but showing/hiding the shortcuts would be confusing).
-			case "N":
 				if (e.shiftKey) {
-					clear();
+					invert_selection();
 				} else {
-					file_new();
+					return;
 				}
 				break;
-			case "T":
-				$toolbox.toggle();
+			case "D":
+				duplicate_layer_and_select_contents();
 				break;
-			case "L": // allowed to override in Firefox
-				$colorbox.toggle();
+			case "J":
+				duplicate_selection();
 				break;
-			case "R":
-				image_flip_and_rotate();
-				break;
-			case "W":
-				image_stretch_and_skew();
-				break;
-
 			default:
-				return; // don't preventDefault
+				return;
 		}
 		e.preventDefault();
-		// put nothing below! note return above
 	}
+});
+$G.on("keyup", (e) => {
+	if (
+		pointer_active &&
+		selected_tool.id === TOOL_LINE &&
+		(e.key === "Meta" || e.code === "MetaLeft" || e.code === "MetaRight")
+	) {
+		meta = e.metaKey;
+		selected_tools.forEach((selected_tool) => {
+			tool_go(selected_tool);
+		});
+		update_helper_layer();
+		e.preventDefault();
+	}
+	handle_speedrun_keyup(e);
 });
 // #endregion
 
@@ -1257,6 +1290,7 @@ $G.on("cut copy paste", (e) => {
 
 	if (e.type === "copy" || e.type === "cut") {
 		if (selection && selection.canvas) {
+			remember_copied_selection_position();
 			const do_sync_clipboard_copy_or_cut = () => {
 				// works only for pasting within a jspaint instance
 				const data_url = selection.canvas.toDataURL();
@@ -1284,13 +1318,15 @@ $G.on("cut copy paste", (e) => {
 			}
 		}
 	} else if (e.type === "paste") {
+		const native_event = e.originalEvent || e;
+		const paste_options = { in_place: !!(e.shiftKey || native_event.shiftKey) };
 		for (const item of cd.items) {
 			if (item.type.match(/^text\/(?:x-data-uri|uri-list|plain)|URL$/)) {
 				item.getAsString((text) => {
 					const uris = get_uris(text);
 					if (uris.length > 0) {
 						load_image_from_uri(uris[0]).then((info) => {
-							paste(info.image || make_canvas(info.image_data));
+							paste(info.image || make_canvas(info.image_data), paste_options);
 						}, (error) => {
 							show_resource_load_error_message(error);
 						});
@@ -1300,7 +1336,7 @@ $G.on("cut copy paste", (e) => {
 				});
 				break;
 			} else if (item.type.match(/^image\//)) {
-				paste_image_from_file(item.getAsFile());
+				paste_image_from_file(item.getAsFile(), paste_options);
 				break;
 			}
 		}
@@ -1312,35 +1348,60 @@ $G.on("cut copy paste", (e) => {
 // This sort of thing should really be at the END of the file.
 
 reset_file();
-reset_selected_colors();
-reset_canvas_and_history(); // (with newly reset colors)
-set_magnification(default_magnification);
 
-// this is synchronous for now, but @TODO: handle possibility of loading a document before callback
-// when switching to asynchronous storage, e.g. with localforage
-localStore.get({
-	width: default_canvas_width,
-	height: default_canvas_height,
-}, (err, stored_values) => {
-	if (err) { return; }
-	my_canvas_width = Number(stored_values.width);
-	my_canvas_height = Number(stored_values.height);
+const opening_file = !!window.initial_system_file_handle;
+const restoring_session = /(?:^|#|,)(?:session|local):.+/i.test(location.hash);
+const loading_from_url = /(?:^|#|,)load:/i.test(location.hash);
 
-	make_or_update_undoable({
-		match: (history_node) => history_node.name === localize("New"),
-		name: "Resize Canvas For New Document",
-		icon: get_help_folder_icon("p_stretch_both.png"),
-	}, () => {
-		main_canvas.width = Math.max(1, my_canvas_width);
-		main_canvas.height = Math.max(1, my_canvas_height);
-		main_ctx.disable_image_smoothing();
-		if (!transparency) {
-			main_ctx.fillStyle = selected_colors.background;
-			main_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
-		}
-		$canvas_area.trigger("resize");
+const restore_stored_canvas_size = () => {
+	// this is synchronous for now, but @TODO: handle possibility of loading a document before callback
+	// when switching to asynchronous storage, e.g. with localforage
+	localStore.get({
+		width: default_canvas_width,
+		height: default_canvas_height,
+	}, (err, stored_values) => {
+		if (err) { return; }
+		my_canvas_width = Number(stored_values.width);
+		my_canvas_height = Number(stored_values.height);
+
+		make_or_update_undoable({
+			match: (history_node) => history_node.name === localize("New"),
+			name: "Resize Canvas For New Document",
+			icon: get_help_folder_icon("p_stretch_both.png"),
+		}, () => {
+			resize_layer_stack(Math.max(1, my_canvas_width), Math.max(1, my_canvas_height), transparency ? null : selected_colors.background);
+			const active_ctx = get_active_layer_context();
+			if (!transparency) {
+				active_ctx.fillStyle = selected_colors.background;
+				active_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
+			}
+			composite_layers();
+			$canvas_area.trigger("resize");
+		});
 	});
-});
+};
+
+if (!opening_file && !restoring_session && !loading_from_url) {
+	apply_default_template_or_blank().then((applied) => {
+		if (!applied) {
+			restore_stored_canvas_size();
+		}
+		$G.triggerHandler("session-update");
+	}).catch((error) => {
+		show_error_message("Failed to start a new document.", error);
+		reset_selected_colors();
+		reset_canvas_and_history();
+		set_magnification(default_magnification);
+		restore_stored_canvas_size();
+	});
+} else {
+	reset_selected_colors();
+	reset_canvas_and_history(); // (with newly reset colors)
+	set_magnification(default_magnification);
+	if (!opening_file && !loading_from_url) {
+		restore_stored_canvas_size();
+	}
+}
 
 if (window.initial_system_file_handle) {
 	systemHooks.readBlobFromHandle(window.initial_system_file_handle).then((file) => {
@@ -1358,11 +1419,11 @@ if (window.initial_system_file_handle) {
 
 const update_palette_from_theme = () => {
 	if (get_theme() === "winter.css") {
-		palette = get_winter_palette();
-		$colorbox.rebuild_palette();
-	} else {
-		palette = default_palette;
-		$colorbox.rebuild_palette();
+		apply_named_palette("winter");
+	} else if (current_palette_id === "winter") {
+		apply_named_palette(last_non_winter_palette_id);
+	} else if (current_palette_id !== "custom") {
+		apply_named_palette(current_palette_id);
 	}
 };
 
@@ -1373,16 +1434,17 @@ update_palette_from_theme();
 
 // #endregion
 
-function update_fill_and_stroke_colors_and_lineWidth(selected_tool, ctx = main_ctx) {
-	ctx.lineWidth = stroke_size;
+function update_fill_and_stroke_colors_and_lineWidth(selected_tool) {
+	const drawing_ctx = get_active_layer_context();
+	drawing_ctx.lineWidth = stroke_size;
 
 	const reverse_because_fill_only = !!(selected_tool.$options && selected_tool.$options.fill && !selected_tool.$options.stroke);
 	/** @type {ColorSelectionSlot} */
 	const color_k =
 		(ctrl && selected_colors.ternary && pointer_active) ? "ternary" :
 			((reverse !== reverse_because_fill_only) ? "background" : "foreground");
-	ctx.fillStyle = fill_color =
-		ctx.strokeStyle = stroke_color =
+	drawing_ctx.fillStyle = fill_color =
+		drawing_ctx.strokeStyle = stroke_color =
 		selected_colors[color_k];
 
 	/** @type {ColorSelectionSlot} */
@@ -1401,31 +1463,30 @@ function update_fill_and_stroke_colors_and_lineWidth(selected_tool, ctx = main_c
 				stroke_color_k = "foreground";
 			}
 		}
-		ctx.fillStyle = fill_color = selected_colors[fill_color_k];
-		ctx.strokeStyle = stroke_color = selected_colors[stroke_color_k];
+		drawing_ctx.fillStyle = fill_color = selected_colors[fill_color_k];
+		drawing_ctx.strokeStyle = stroke_color = selected_colors[stroke_color_k];
 	}
 	pick_color_slot = fill_color_k;
 }
 
 // #region Primary Canvas Interaction
 function tool_go(selected_tool, event_name) {
-	const ctx = getPaintingCtx();
-	update_fill_and_stroke_colors_and_lineWidth(selected_tool, ctx);
+	update_fill_and_stroke_colors_and_lineWidth(selected_tool);
+	const drawing_ctx = get_active_layer_context();
 
 	if (selected_tool[event_name]) {
-		selected_tool[event_name](ctx, pointer.x, pointer.y);
+		selected_tool[event_name](drawing_ctx, pointer.x, pointer.y);
 	}
 	if (selected_tool.paint) {
-		selected_tool.paint(ctx, pointer.x, pointer.y);
+		selected_tool.paint(drawing_ctx, pointer.x, pointer.y);
 	}
-	if (ctx !== main_ctx) {
-		layerManager.composite();
-		update_helper_layer();
-	}
+	// Previews are drawn on the helper layer; tools that commit pixels call composite_layers in their undoable.
 }
 function canvas_pointer_move(e) {
 	ctrl = e.ctrlKey;
 	shift = e.shiftKey;
+	alt = e.altKey;
+	meta = e.metaKey;
 	pointer = to_canvas_coords(e);
 
 	// Quick Undo (for mouse/pen)
@@ -1434,31 +1495,36 @@ function canvas_pointer_move(e) {
 	if (pointers.length && e.button != -1) {
 		// compare buttons other than middle mouse button by using bitwise OR to make that bit of the number the same
 		const MMB = 4;
-		if (e.pointerType != pointer_type || (e.buttons | MMB) != (pointer_buttons | MMB)) {
+		// Releasing all buttons often synthesizes a pointermove with button !== -1 before pointerup.
+		// That must not cancel — otherwise the stroke is committed then immediately undone.
+		if (e.buttons !== 0 && (e.pointerType != pointer_type || (e.buttons | MMB) != (pointer_buttons | MMB))) {
 			cancel();
 			pointer_active = false; // NOTE: pointer_active used in cancel()
 			return;
 		}
 	}
 
-	if (e.shiftKey) {
-		// TODO: snap to 45 degrees for Pencil and Polygon tools
-		// TODO: manipulating the pointer object directly is a bit of a hack
-		if (
-			selected_tool.id === TOOL_LINE ||
-			selected_tool.id === TOOL_CURVE
-		) {
-			// snap to eight directions
-			const dist = Math.sqrt(
-				(pointer.y - pointer_start.y) * (pointer.y - pointer_start.y) +
-				(pointer.x - pointer_start.x) * (pointer.x - pointer_start.x)
-			);
-			const eighth_turn = TAU / 8;
-			const angle_0_to_8 = Math.atan2(pointer.y - pointer_start.y, pointer.x - pointer_start.x) / eighth_turn;
-			const angle = Math.round(angle_0_to_8) * eighth_turn;
-			pointer.x = Math.round(pointer_start.x + Math.cos(angle) * dist);
-			pointer.y = Math.round(pointer_start.y + Math.sin(angle) * dist);
-		} else if (selected_tool.shape) {
+	// TODO: snap to 45 degrees for Pencil and Polygon tools
+	// TODO: manipulating the pointer object directly is a bit of a hack
+	if (e.shiftKey && (
+		selected_tool.id === TOOL_LINE ||
+		selected_tool.id === TOOL_CURVE
+	)) {
+		// snap to eight directions
+		const dist = Math.sqrt(
+			(pointer.y - pointer_start.y) * (pointer.y - pointer_start.y) +
+			(pointer.x - pointer_start.x) * (pointer.x - pointer_start.x)
+		);
+		const eighth_turn = TAU / 8;
+		const angle_0_to_8 = Math.atan2(pointer.y - pointer_start.y, pointer.x - pointer_start.x) / eighth_turn;
+		const angle = Math.round(angle_0_to_8) * eighth_turn;
+		pointer.x = Math.round(pointer_start.x + Math.cos(angle) * dist);
+		pointer.y = Math.round(pointer_start.y + Math.sin(angle) * dist);
+	} else if (selected_tool.shape) {
+		// Ellipse is 1:1 by default; Shift restores free-aspect (old default).
+		// Other shapes: Shift constrains to 1:1.
+		const constrain_1to1 = selected_tool.id === TOOL_ELLIPSE ? !e.shiftKey : e.shiftKey;
+		if (constrain_1to1) {
 			// snap to four diagonals
 			const w = Math.abs(pointer.x - pointer_start.x);
 			const h = Math.abs(pointer.y - pointer_start.y);
@@ -1634,6 +1700,18 @@ $G.on("pointermove", (event) => {
 $canvas.on("pointerdown", (e) => {
 	update_canvas_rect();
 
+	if (handle_canvas_pointerdown_extras(e)) {
+		return;
+	}
+
+	const inspecting = selected_tools.every((tool) =>
+		tool.id === TOOL_PICK_COLOR || tool.id === TOOL_MAGNIFIER
+	);
+	if (!inspecting && block_if_active_layer_locked()) {
+		e.preventDefault();
+		return;
+	}
+
 	// Quick Undo when there are multiple pointers (i.e. for touch)
 	// see pointermove for other pointer types
 	// SEE OTHER POINTERDOWN HANDLER ALSO
@@ -1679,6 +1757,8 @@ $canvas.on("pointerdown", (e) => {
 	button = e.button;
 	ctrl = e.ctrlKey;
 	shift = e.shiftKey;
+	alt = e.altKey;
+	meta = e.metaKey;
 	pointer_start = pointer_previous = pointer = to_canvas_coords(e);
 
 	const pointerdown_action = () => {
@@ -1706,14 +1786,10 @@ $canvas.on("pointerdown", (e) => {
 			// don't create undoables if you're two-finger-panning
 			// @TODO: do any tools use pointerup for cleanup?
 			if (!no_undoable) {
-				const paintingCtx = getPaintingCtx();
 				selected_tools.forEach((selected_tool) => {
-					selected_tool.pointerup?.(paintingCtx, pointer.x, pointer.y);
+					selected_tool.pointerup?.(get_active_layer_context(), pointer.x, pointer.y);
 				});
-				if (paintingCtx !== main_ctx) {
-					layerManager.composite();
-					update_helper_layer();
-				}
+				composite_layers();
 			}
 
 			if (selected_tools.length === 1) {
@@ -1762,16 +1838,11 @@ function prevent_selection($el) {
 		) {
 			return;
 		}
-		// Layer panel: HTML5 drag-reorder, real <button>s, and draggable rows need native mousedown behavior.
-		if (
-			e.target instanceof HTMLButtonElement ||
-			e.target.closest(".layers-list") ||
-			e.target.closest("[draggable='true']")
-		) {
-			return;
-		}
 		if (e.button === 1) {
 			return; // allow middle-click scrolling
+		}
+		if ($(e.target).closest(".layer-row").length && e.type !== "contextmenu") {
+			return; // allow dragging layers and renaming
 		}
 		e.preventDefault();
 		// we're just trying to prevent selection
@@ -1785,7 +1856,7 @@ prevent_selection($app);
 prevent_selection($toolbox);
 // prevent_selection($toolbox2);
 prevent_selection($colorbox);
-prevent_selection($layerbox);
+prevent_selection($layersbox);
 // #endregion
 
 // Stop drawing (or dragging or whatever) if you Alt+Tab or whatever
@@ -1840,3 +1911,5 @@ window.api_for_cypress_tests = {
 // #endregion
 
 init_webgl_stuff();
+init_speedrun_features();
+init_shortcut_settings(menus, { DEFAULT_KEYMAP, get_keymap, save_keymap });

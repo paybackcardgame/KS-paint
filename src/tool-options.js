@@ -1,8 +1,8 @@
 // @ts-check
 /* global stroke_size:writable, airbrush_size:writable, brush_shape:writable, brush_size:writable, eraser_size:writable, magnification:writable, tool_transparent_mode:writable */
-import { set_magnification } from "./functions.js";
-import { $G, E, make_canvas } from "./helpers.js";
-import { render_brush, replace_colors_with_swatch, stamp_brush_canvas } from "./image-manipulation.js";
+import { set_magnification, undoable_option_change } from "./functions.js";
+import { $G, E, get_help_folder_icon, make_canvas } from "./helpers.js";
+import { get_fill_threshold, get_wand_threshold, render_brush, replace_colors_with_swatch, set_fill_threshold, set_wand_threshold, stamp_brush_canvas } from "./image-manipulation.js";
 import { get_theme } from "./theme.js";
 
 const ChooserCanvas = (
@@ -289,8 +289,10 @@ const $choose_brush = $Choose(
 
 		return cb_canvas;
 	}, ({ shape, size }) => {
-		brush_shape = shape;
-		brush_size = size;
+		undoable_option_change({ name: "Brush Shape", icon: get_help_folder_icon("p_brush.gif"), merge_consecutive: true }, () => {
+			brush_shape = shape;
+			brush_size = size;
+		});
 	}, ({ shape, size }) => brush_shape === shape && brush_size === size
 ).addClass("choose-brush");
 
@@ -306,7 +308,9 @@ const $choose_eraser_size = $Choose(
 		return ce_canvas;
 	},
 	(size) => {
-		eraser_size = size;
+		undoable_option_change({ name: "Eraser Size", icon: get_help_folder_icon("p_erase.gif"), merge_consecutive: true }, () => {
+			eraser_size = size;
+		});
 	},
 	(size) => eraser_size === size
 ).addClass("choose-eraser");
@@ -323,7 +327,9 @@ const $choose_stroke_size = $Choose(
 		return cs_canvas;
 	},
 	(size) => {
-		stroke_size = size;
+		undoable_option_change({ name: "Line Thickness", icon: get_help_folder_icon("p_line.gif"), merge_consecutive: true }, () => {
+			stroke_size = size;
+		});
 	},
 	(size) => stroke_size === size
 ).addClass("choose-stroke-size");
@@ -387,7 +393,9 @@ const $choose_airbrush_size = $Choose(
 		);
 	},
 	(size) => {
-		airbrush_size = size;
+		undoable_option_change({ name: "Airbrush Size", icon: get_help_folder_icon("p_airb.gif"), merge_consecutive: true }, () => {
+			airbrush_size = size;
+		});
 	},
 	(size) => size === airbrush_size,
 	true,
@@ -415,9 +423,63 @@ const $choose_transparent_mode = $Choose(
 	true,
 ).addClass("choose-transparent-mode");
 
+/**
+ * Fill tolerance slider (0–64 shown; underlying max 255).
+ * @type {JQuery<HTMLDivElement> & { fill_tolerance?: number }}
+ */
+const $choose_fill_tolerance = $(E("div")).addClass("choose-fill-tolerance");
+const $fill_tolerance_label = $(E("div")).addClass("fill-tolerance-label").text("Tolerance").appendTo($choose_fill_tolerance);
+const $fill_tolerance_value = $(E("span")).addClass("fill-tolerance-value").text("1").appendTo($fill_tolerance_label);
+const $fill_tolerance_input = $(E("input")).attr({
+	type: "range",
+	min: 0,
+	max: 64,
+	value: 1,
+	title: "Fill color tolerance",
+}).addClass("fill-tolerance-slider").appendTo($choose_fill_tolerance);
+
+const sync_fill_tolerance_ui = () => {
+	const value = get_fill_threshold();
+	$fill_tolerance_input.val(String(Math.min(64, value)));
+	$fill_tolerance_value.text(String(value));
+};
+$fill_tolerance_input.on("input", () => {
+	set_fill_threshold(Number($fill_tolerance_input.val()));
+	$fill_tolerance_value.text(String(get_fill_threshold()));
+});
+$G.on("option-changed fill-threshold-change", sync_fill_tolerance_ui);
+sync_fill_tolerance_ui();
+
+/**
+ * Magic Wand tolerance slider (0–64 shown; underlying max 255). Independent from Fill.
+ * @type {JQuery<HTMLDivElement>}
+ */
+const $choose_wand_tolerance = $(E("div")).addClass("choose-fill-tolerance choose-wand-tolerance");
+const $wand_tolerance_label = $(E("div")).addClass("fill-tolerance-label").text("Tolerance").appendTo($choose_wand_tolerance);
+const $wand_tolerance_value = $(E("span")).addClass("fill-tolerance-value").text("1").appendTo($wand_tolerance_label);
+const $wand_tolerance_input = $(E("input")).attr({
+	type: "range",
+	min: 0,
+	max: 64,
+	value: 1,
+	title: "Magic Wand color tolerance",
+}).addClass("fill-tolerance-slider").appendTo($choose_wand_tolerance);
+
+const sync_wand_tolerance_ui = () => {
+	const value = get_wand_threshold();
+	$wand_tolerance_input.val(String(Math.min(64, value)));
+	$wand_tolerance_value.text(String(value));
+};
+$wand_tolerance_input.on("input", () => {
+	set_wand_threshold(Number($wand_tolerance_input.val()));
+	$wand_tolerance_value.text(String(get_wand_threshold()));
+});
+$G.on("option-changed wand-threshold-change", sync_wand_tolerance_ui);
+sync_wand_tolerance_ui();
 
 export {
 	$ChooseShapeStyle, $choose_airbrush_size, $choose_brush,
-	$choose_eraser_size, $choose_magnification, $choose_stroke_size, $choose_transparent_mode
+	$choose_eraser_size, $choose_fill_tolerance, $choose_magnification, $choose_stroke_size, $choose_transparent_mode,
+	$choose_wand_tolerance
 };
 

@@ -1,5 +1,5 @@
 // @ts-check
-/* exported $thumbnail_window, airbrush_size, aliasing, brush_shape, brush_size, button, ctrl, current_history_node, enable_fs_access_api, enable_palette_loading_from_indexed_images, eraser_size, file_format, file_name, fill_color, helper_layer, history_node_to_cancel_to, magnification, main_ctx, monochrome, monochrome_palette, my_canvas_height, my_canvas_width, palette, pencil_size, pick_color_slot, pointer, pointer_active, pointer_buttons, pointer_over_canvas, pointer_previous, pointer_start, pointer_type, pointers, polychrome_palette, redos, return_to_magnification, return_to_tools, reverse, root_history_node, saved, selected_colors, selected_tool, selected_tools, selection, shift, show_grid, show_thumbnail, stroke_color, stroke_size, system_file_handle, show_font_box, text_tool_font, textbox, thumbnail_canvas, tool_transparent_mode, transparency, undos, update_helper_layer_on_pointermove_active */
+/* exported $thumbnail_window, active_layer_id, airbrush_size, aliasing, alt, brush_shape, brush_size, button, ctrl, current_history_node, current_palette_id, enable_fs_access_api, enable_palette_loading_from_indexed_images, eraser_size, file_format, file_name, fill_all_layers, fill_color, fill_replace_all, helper_layer, history_node_to_cancel_to, last_non_winter_palette_id, layers, magnification, main_ctx, meta, monochrome, monochrome_palette, my_canvas_height, my_canvas_width, palette, pencil_size, pick_color_slot, pointer, pointer_active, pointer_buttons, pointer_over_canvas, pointer_previous, pointer_start, pointer_type, pointers, polychrome_palette, redos, return_to_magnification, return_to_tools, reverse, root_history_node, saved, selected_colors, selected_tool, selected_tools, selection, selection_all_layers, shift, show_grid, show_thumbnail, stroke_color, stroke_size, system_file_handle, show_font_box, text_tool_font, textbox, thumbnail_canvas, tool_transparent_mode, transparency, undos, update_helper_layer_on_pointermove_active, wand_all_layers, wand_replace_all */
 
 // Can't import things until this file is a module...
 // (Well, could use dynamic imports, but that's async and thus probably as complicated as getting it to work with all ESM.)
@@ -34,10 +34,22 @@ main_canvas.classList.add("main-canvas");
 /** @type {PixelContext} */
 const main_ctx = main_canvas.ctx;
 
-/** @type {(string | CanvasPattern)[]} */
-let palette = window.default_palette;
+/** @type {PaintLayer[]} */
+let layers = [];
+/** @type {string | undefined} */
+let active_layer_id;
+
+/** @type {(string | CanvasPattern)[] & { rows?: number }} */
+let palette = (window.kp_color_palette || window.default_palette).slice();
+if (window.kp_color_palette && window.kp_color_palette.rows) {
+	palette.rows = window.kp_color_palette.rows;
+}
 /** @type {(string | CanvasPattern)[]} */
 let polychrome_palette = palette;
+/** @type {string} */
+let current_palette_id = "kp";
+/** @type {string} */
+let last_non_winter_palette_id = "kp";
 /** @type {(string | CanvasPattern)[]} */
 let monochrome_palette = window.make_monochrome_palette();
 
@@ -61,11 +73,11 @@ let enable_fs_access_api = false;
 
 /** @type {BrushShape} */
 const default_brush_shape = "circle";
-const default_brush_size = 4;
+const default_brush_size = 5;
 const default_eraser_size = 8;
 const default_airbrush_size = 9;
 const default_pencil_size = 1;
-const default_stroke_size = 1; // applies to lines, curves, shape outlines
+const default_stroke_size = 5; // applies to lines, curves, shape outlines
 
 /** @type {BrushShape} */
 let brush_shape = default_brush_shape;
@@ -84,6 +96,16 @@ let stroke_color;
 let fill_color;
 /** @type {ColorSelectionSlot} */
 let pick_color_slot = "background";
+/** When true, Fill tool replaces color globally (like Shift+click). Toggle with Shift+F. Inverse of the Contiguous checkbox. */
+let fill_replace_all = false;
+/** When true, Fill samples the composite so other layers act as boundaries, but still paints only the active layer. */
+let fill_all_layers = false;
+/** When true, Magic Wand selects matching color globally (like Shift+click). Inverse of the Contiguous checkbox. Default: contiguous off. */
+let wand_replace_all = true;
+/** When true, Magic Wand samples the composite so other layers act as boundaries, but still cuts only the active layer. */
+let wand_all_layers = false;
+/** When true, Select / Free-Form Select copy and punch every visible layer. Default: active layer only, preserving alpha. */
+let selection_all_layers = false;
 
 /** @type {Tool} */
 let selected_tool = default_tool;
@@ -170,6 +192,10 @@ let reverse;
 let ctrl;
 /** @type {boolean} */
 let shift;
+/** @type {boolean} */
+let alt;
+/** @type {boolean} */
+let meta;
 /** @type {number | undefined} */
 let button;
 /** @type {boolean} */

@@ -66,6 +66,21 @@ window.setMenus = (menus) => {
 		return value;
 	}));
 };
+window.setCapturedShortcuts = (accelerators) => {
+	ipcRenderer.send("set-captured-shortcuts", accelerators);
+};
+ipcRenderer.on("captured-shortcut", (_event, input) => {
+	window.dispatchEvent(new KeyboardEvent("keydown", {
+		key: input.key,
+		code: input.code,
+		ctrlKey: !!input.control,
+		metaKey: !!input.meta,
+		shiftKey: !!input.shift,
+		altKey: !!input.alt,
+		bubbles: true,
+		cancelable: true,
+	}));
+});
 ipcRenderer.on("menu-function", (_event, function_id, request_id) => {
 	const result = menuFunctions[function_id]();
 	ipcRenderer.send(`menu-function-result-${request_id}`, result);

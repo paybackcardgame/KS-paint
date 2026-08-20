@@ -3,6 +3,7 @@
 import { $DialogWindow } from "./$ToolWindow.js";
 // import { localize } from "./app-localization.js";
 import { E, is_discord_embed } from "./helpers.js";
+import { delete_document_history } from "./history-persistence.js";
 import { showMessageBox } from "./msgbox.js";
 
 /** @type {OSGUI$Window & I$DialogWindow} */
@@ -82,6 +83,10 @@ function manage_storage() {
 			$tr.next().find(".remove-button").focus();
 
 			localStorage.removeItem(k);
+			const session_id = k.replace(/^image#/, "");
+			if (session_id && session_id !== k) {
+				delete_document_history(session_id);
+			}
 			$tr.remove();
 			if ($table.find("tr").length == 0) {
 				$message.html("<p>All clear!</p>");

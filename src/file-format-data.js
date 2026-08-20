@@ -54,6 +54,11 @@ add_image_format("image/x-bmp-8bpp", "256 Color Bitmap (*.bmp;*.dib)");
 add_image_format("image/bmp", "24-bit Bitmap (*.bmp;*.dib)");
 // add_image_format("image/x-bmp-32bpp", "32-bit Transparent Bitmap (*.bmp;*.dib)");
 
+/** @type {ImageFileFormat[]} */
+const psd_formats = [];
+add_image_format("image/vnd.adobe.photoshop", "Photoshop Document (*.psd)", psd_formats);
+const document_formats = [...psd_formats, ...image_formats];
+
 /**
  * Filter to only support 24bpp BMP files for File System Access API and Electron save dialog,
  * as these APIs don't allow you to access the selected file type.
@@ -131,6 +136,16 @@ palette_formats.sort((a, b) =>
 	0
 );
 
-export { formats_unique_per_file_extension, image_formats, palette_formats };
+/** @type {PaletteFileFormat[]} */
+const template_formats = [
+	{
+		formatID: "JSPAINT_TEMPLATE",
+		name: "JS Paint Template",
+		nameWithExtensions: "JS Paint Template (*.jspaint-template;*.json)",
+		extensions: ["jspaint-template", "json"],
+	},
+];
+
+export { document_formats, formats_unique_per_file_extension, image_formats, palette_formats, psd_formats, template_formats };
 // Temporary globals until all dependent code is converted to ES Modules
 window.formats_unique_per_file_extension = formats_unique_per_file_extension; // used by electron-injected.js

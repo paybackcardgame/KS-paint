@@ -1,21 +1,25 @@
 // @ts-check
 // eslint-disable-next-line no-unused-vars
-/* global $thumbnail_window:writable, canvas_bounding_client_rect:writable, current_history_node:writable, file_format:writable, file_name:writable, helper_layer:writable, history_node_to_cancel_to:writable, magnification:writable, monochrome:writable, palette:writable, pointer:writable, return_to_magnification:writable, return_to_tools:writable, root_history_node:writable, saved:writable, selected_colors:writable, selected_tool:writable, selected_tools:writable, selection:writable, show_grid:writable, show_thumbnail:writable, system_file_handle:writable, textbox:writable, thumbnail_canvas:writable, tool_transparent_mode:writable, transparency:writable, undos:writable */
-/* global $canvas, $canvas_area, $colorbox, $status_text, $toolbox, $Window, AccessKeys, applyCSSProperties, decodeBMP, default_canvas_height, default_canvas_width, default_magnification, default_tool, enable_palette_loading_from_indexed_images, encodeBMP, localize, main_canvas, main_ctx, monochrome_palette, my_canvas_height, my_canvas_width, new_local_session, parseThemeFileString, pointer_active, pointers, polychrome_palette, redos, systemHooks, text_tool_font, update_fill_and_stroke_colors_and_lineWidth, UPNG, UTIF */
+/* global $thumbnail_window:writable, airbrush_size:writable, brush_shape:writable, brush_size:writable, canvas_bounding_client_rect:writable, current_history_node:writable, current_palette_id:writable, eraser_size:writable, file_format:writable, file_name:writable, helper_layer:writable, history_node_to_cancel_to:writable, last_non_winter_palette_id:writable, magnification:writable, monochrome:writable, palette:writable, pencil_size:writable, pointer:writable, polychrome_palette:writable, return_to_magnification:writable, return_to_tools:writable, root_history_node:writable, saved:writable, selected_colors:writable, selected_tool:writable, selected_tools:writable, selection:writable, show_grid:writable, show_thumbnail:writable, stroke_size:writable, system_file_handle:writable, textbox:writable, thumbnail_canvas:writable, tool_transparent_mode:writable, transparency:writable, undos:writable */
+/* global $canvas, $canvas_area, $colorbox, $status_text, $toolbox, $Window, AccessKeys, active_layer_id, applyCSSProperties, decodeBMP, default_canvas_height, default_canvas_width, default_magnification, default_tool, enable_palette_loading_from_indexed_images, encodeBMP, localize, main_canvas, main_ctx, monochrome_palette, my_canvas_height, my_canvas_width, new_local_session, parseThemeFileString, pointer_active, pointers, redos, systemHooks, text_tool_font, update_fill_and_stroke_colors_and_lineWidth, UPNG, UTIF */
 
 import { $DialogWindow } from "./$ToolWindow.js";
 import { OnCanvasHelperLayer } from "./OnCanvasHelperLayer.js";
 import { OnCanvasSelection } from "./OnCanvasSelection.js";
 import { OnCanvasTextBox } from "./OnCanvasTextBox.js";
 // import { localize } from "./app-localization.js";
-import { default_palette } from "./color-data.js";
-import { image_formats } from "./file-format-data.js";
+import { default_palette, get_named_palette, copy_palette } from "./color-data.js";
+import { apply_default_template_or_blank, cancel_pending_default_template } from "./document-template.js";
+import { document_formats, image_formats, psd_formats } from "./file-format-data.js";
 import { $G, E, TAU, debounce, from_canvas_coords, get_help_folder_icon, get_icon_for_tool, get_rgba_from_color, is_discord_embed, is_pride_month, make_canvas, render_access_key, to_canvas_coords } from "./helpers.js";
+import { HISTORY_GIF_FRAME_DELAY_MS, is_out_of_memory_error, plan_history_gif } from "./history-gif.js";
 import { apply_image_transformation, draw_grid, draw_selection_box, flip_horizontal, flip_vertical, invert_monochrome, invert_rgb, rotate, stretch_and_skew, threshold_black_and_white } from "./image-manipulation.js";
 import { show_imgur_uploader } from "./imgur.js";
+import { block_if_active_layer_locked, composite_layers, duplicate_layer, get_active_layer, get_active_layer_context, initialize_layer_stack, initialize_layer_stack_from_layers, resize_layer_stack, restore_layer_snapshot, snapshot_layers } from "./layers.js";
 import { showMessageBox } from "./msgbox.js";
+import { PSD_MIME_TYPE, is_psd_blob, read_psd_document, write_psd_blob } from "./psd.js";
 import { localStore } from "./storage.js";
-import { TOOL_CURVE, TOOL_FREE_FORM_SELECT, TOOL_POLYGON, TOOL_SELECT, TOOL_TEXT, tools } from "./tools.js";
+import { TOOL_CURVE, TOOL_FREE_FORM_SELECT, TOOL_POLYGON, TOOL_SELECT, TOOL_TEXT, hidden_tools, tools } from "./tools.js";
 // `sessions.js` must be loaded after `app.js`
 // This would cause it to be loaded earlier, and error trying to access `undos`
 // I'm surprised I haven't been bitten by this sort of bug, and I've
@@ -644,8 +648,8 @@ function reset_selected_colors() {
 
 function reset_file() {
 	system_file_handle = null;
-	file_name = localize("untitled");
-	file_format = "image/png";
+	file_name = `${localize("untitled")}.psd`;
+	file_format = PSD_MIME_TYPE;
 	saved = true;
 	update_title();
 }
@@ -664,8 +668,11 @@ function reset_canvas_and_history() {
 	main_ctx.disable_image_smoothing();
 	main_ctx.fillStyle = selected_colors.background;
 	main_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
+	initialize_layer_stack(main_canvas);
 
 	current_history_node.image_data = main_ctx.getImageData(0, 0, main_canvas.width, main_canvas.height);
+	current_history_node.layers = snapshot_layers();
+	current_history_node.active_layer_id = get_active_layer().id;
 
 	$canvas_area.trigger("resize");
 	$G.triggerHandler("history-update"); // update history view
@@ -679,9 +686,12 @@ function reset_canvas_and_history() {
  * @param {number=} options.timestamp - when this state was created
  * @param {boolean=} options.soft - indicates that undo should skip this state; it can still be accessed with the History window
  * @param {ImageData | null=} options.image_data - the image data for the canvas (TODO: region updates)
+ * @param {LayerSnapshot[]=} options.layers - full layer stack snapshot
+ * @param {string=} options.active_layer_id - active layer id for the snapshot
  * @param {ImageData | null=} options.selection_image_data - the image data for the selection, if any
  * @param {number=} options.selection_x - the x position of the selection, if any
  * @param {number=} options.selection_y - the y position of the selection, if any
+ * @param {{ layerId: string, image_data: ImageData }[]=} options.selection_layer_slices - per-layer selection pixels, if any
  * @param {string=} options.textbox_text - the text in the textbox, if any
  * @param {number=} options.textbox_x - the x position of the textbox, if any
  * @param {number=} options.textbox_y - the y position of the textbox, if any
@@ -692,6 +702,7 @@ function reset_canvas_and_history() {
  * @param {string | CanvasPattern=} options.foreground_color - selected foreground color (left click)
  * @param {string | CanvasPattern=} options.background_color - selected background color (right click)
  * @param {string | CanvasPattern=} options.ternary_color - selected ternary color (ctrl+click)
+ * @param {ToolSizes=} options.tool_sizes - brush/line/eraser/airbrush/pencil sizes and brush shape
  * @param {string=} options.name - the name of the operation, shown in the history window, e.g. localize("Resize Canvas")
  * @param {HTMLImageElement |HTMLCanvasElement | null=} options.icon - a visual representation of the operation type, shown in the history window, e.g. get_help_folder_icon("p_blank.png")
  * @returns {HistoryNode}
@@ -702,9 +713,12 @@ function make_history_node({
 	timestamp = Date.now(), // when this state was created
 	soft = false, // indicates that undo should skip this state; it can still be accessed with the History window
 	image_data = null, // the image data for the canvas (TODO: region updates)
+	layers: layer_snapshots,
+	active_layer_id: history_active_layer_id,
 	selection_image_data = null, // the image data for the selection, if any
 	selection_x, // the x position of the selection, if any
 	selection_y, // the y position of the selection, if any
+	selection_layer_slices, // per-layer pixels for an all-layers selection, if any
 	textbox_text, // the text in the textbox, if any
 	textbox_x, // the x position of the textbox, if any
 	textbox_y, // the y position of the textbox, if any
@@ -712,9 +726,12 @@ function make_history_node({
 	textbox_height, // the height of the textbox, if any
 	text_tool_font = null, // the font of the Text tool (important to restore a textbox-containing state, but persists without a textbox)
 	tool_transparent_mode = false, // whether transparent mode is on for Select/Free-Form Select/Text tools; otherwise box is opaque
-	foreground_color, // selected foreground color (left click)
-	background_color, // selected background color (right click)
-	ternary_color, // selected ternary color (ctrl+click)
+	// Colors and tool sizes default to the current settings, so that every state
+	// (including a document's initial state) can restore them when you undo to it.
+	foreground_color = selected_colors.foreground, // selected foreground color (left click)
+	background_color = selected_colors.background, // selected background color (right click)
+	ternary_color = selected_colors.ternary, // selected ternary color (ctrl+click)
+	tool_sizes = capture_drawing_settings().tool_sizes, // brush/line/eraser/airbrush/pencil sizes and brush shape
 	name, // the name of the operation, shown in the history window, e.g. localize("Resize Canvas")
 	icon = null, // an Image representation of the operation type, shown in the history window, e.g. get_help_folder_icon("p_blank.png")
 }) {
@@ -724,9 +741,12 @@ function make_history_node({
 		timestamp,
 		soft,
 		image_data,
+		layers: layer_snapshots,
+		active_layer_id: history_active_layer_id,
 		selection_image_data,
 		selection_x,
 		selection_y,
+		selection_layer_slices,
 		textbox_text,
 		textbox_x,
 		textbox_y,
@@ -737,9 +757,110 @@ function make_history_node({
 		foreground_color,
 		background_color,
 		ternary_color,
+		tool_sizes,
 		name,
 		icon,
 	};
+}
+
+/**
+ * Snapshots the settings that undo restores but that don't live on the canvas.
+ * @returns {{foreground_color: string | CanvasPattern, background_color: string | CanvasPattern, ternary_color: string | CanvasPattern, tool_sizes: ToolSizes}}
+ */
+function capture_drawing_settings() {
+	return {
+		foreground_color: selected_colors.foreground,
+		background_color: selected_colors.background,
+		ternary_color: selected_colors.ternary,
+		tool_sizes: {
+			brush_shape,
+			brush_size,
+			stroke_size,
+			eraser_size,
+			airbrush_size,
+			pencil_size,
+		},
+	};
+}
+
+/**
+ * @param {ReturnType<typeof capture_drawing_settings>} a
+ * @param {ReturnType<typeof capture_drawing_settings>} b
+ * @returns {boolean}
+ */
+function drawing_settings_match(a, b) {
+	return (
+		a.foreground_color === b.foreground_color &&
+		a.background_color === b.background_color &&
+		a.ternary_color === b.ternary_color &&
+		Object.keys(a.tool_sizes).every((key) => a.tool_sizes[key] === b.tool_sizes[key])
+	);
+}
+
+/**
+ * Restores the colors and tool sizes recorded on a history state.
+ * A state restored from a session backup may not have all of them recorded,
+ * in which case the current settings are kept.
+ * @param {HistoryNode} history_node
+ */
+function restore_drawing_settings(history_node) {
+	let changed = false;
+	/** @type {[ColorSelectionSlot, "foreground_color" | "background_color" | "ternary_color"][]} */
+	const color_slots = [
+		["foreground", "foreground_color"],
+		["background", "background_color"],
+		["ternary", "ternary_color"],
+	];
+	for (const [slot, key] of color_slots) {
+		// `null` means the state was restored from a session backup that couldn't
+		// serialize the color (patterns), so there's nothing to restore.
+		if (history_node[key] != null && selected_colors[slot] !== history_node[key]) {
+			selected_colors[slot] = history_node[key];
+			changed = true;
+		}
+	}
+	const sizes = history_node.tool_sizes;
+	if (sizes) {
+		if (sizes.brush_shape !== undefined && brush_shape !== sizes.brush_shape) { brush_shape = sizes.brush_shape; changed = true; }
+		if (sizes.brush_size !== undefined && brush_size !== sizes.brush_size) { brush_size = sizes.brush_size; changed = true; }
+		if (sizes.stroke_size !== undefined && stroke_size !== sizes.stroke_size) { stroke_size = sizes.stroke_size; changed = true; }
+		if (sizes.eraser_size !== undefined && eraser_size !== sizes.eraser_size) { eraser_size = sizes.eraser_size; changed = true; }
+		if (sizes.airbrush_size !== undefined && airbrush_size !== sizes.airbrush_size) { airbrush_size = sizes.airbrush_size; changed = true; }
+		if (sizes.pencil_size !== undefined && pencil_size !== sizes.pencil_size) { pencil_size = sizes.pencil_size; changed = true; }
+	}
+	if (changed) {
+		$G.trigger("option-changed");
+		selected_tool?.$options?.trigger("update");
+		update_helper_layer();
+	}
+}
+
+/**
+ * Replace the in-memory undo tree after loading a persisted session history.
+ * Keeps the already-loaded document (including layers) as the current state.
+ * @param {{root: HistoryNode, current: HistoryNode, undos: HistoryNode[], redos: HistoryNode[]}} snapshot
+ */
+function restore_history_state(snapshot) {
+	if (!snapshot?.root || !snapshot?.current) {
+		return;
+	}
+	root_history_node = snapshot.root;
+	current_history_node = snapshot.current;
+	history_node_to_cancel_to = null;
+	undos.length = 0;
+	undos.push(...(snapshot.undos || []));
+	redos.length = 0;
+	redos.push(...(snapshot.redos || []));
+	trim_undo_stack();
+	try {
+		composite_layers();
+		current_history_node.image_data = main_ctx.getImageData(0, 0, main_canvas.width, main_canvas.height);
+		current_history_node.layers = snapshot_layers();
+		current_history_node.active_layer_id = get_active_layer().id;
+	} catch (error) {
+		window.console?.warn("Restored history, but failed to snapshot the live document onto the current history node.", error);
+	}
+	$G.triggerHandler("history-update");
 }
 
 function update_title() {
@@ -958,6 +1079,7 @@ function open_from_image_info(info, callback, canceled, into_existing_session, f
 	are_you_sure(({ canvas_modified_while_loading } = {}) => {
 		deselect();
 		cancel();
+		cancel_pending_default_template();
 
 		if (!into_existing_session) {
 			$G.triggerHandler("session-update"); // autosave old session
@@ -969,13 +1091,15 @@ function open_from_image_info(info, callback, canceled, into_existing_session, f
 		reset_canvas_and_history(); // (with newly reset colors)
 		set_magnification(default_magnification);
 
-		main_ctx.copy(info.image || info.image_data);
+		initialize_layer_stack(info.image || info.image_data);
 		apply_file_format_and_palette_info(info);
 		transparency = has_any_transparency(main_ctx);
 		$canvas_area.trigger("resize");
 
 		current_history_node.name = localize("Open");
 		current_history_node.image_data = main_ctx.getImageData(0, 0, main_canvas.width, main_canvas.height);
+		current_history_node.layers = snapshot_layers();
+		current_history_node.active_layer_id = get_active_layer().id;
 		current_history_node.icon = get_help_folder_icon("p_open.png");
 
 		if (canvas_modified_while_loading || !from_session_load) {
@@ -989,14 +1113,11 @@ function open_from_image_info(info, callback, canceled, into_existing_session, f
 		$G.triggerHandler("history-update"); // update history view
 
 		if (info.source_blob instanceof File) {
-			file_name = info.source_blob.name;
-			// file.path is available in Electron (see https://www.electronjs.org/docs/api/file-object#file-object)
-			// @ts-ignore
-			system_file_handle = info.source_blob.path;
+			file_name = info.source_blob.name.replace(/\.[^.]+$/, "") + ".psd";
 		}
-		if (info.source_file_handle) {
-			system_file_handle = info.source_file_handle;
-		}
+		// Flat images are imported into a new layered PSD document; never overwrite the source image.
+		system_file_handle = null;
+		file_format = PSD_MIME_TYPE;
 		saved = true;
 		update_title();
 
@@ -1009,7 +1130,60 @@ function open_from_image_info(info, callback, canceled, into_existing_session, f
  * @param {Blob} file
  * @param {UserFileHandle} source_file_handle
  */
-function open_from_file(file, source_file_handle) {
+async function open_from_psd_file(file, source_file_handle) {
+	let document_info;
+	try {
+		document_info = await read_psd_document(file);
+	} catch (error) {
+		show_error_message(localize("Paint cannot open this file."), error);
+		return;
+	}
+	are_you_sure(() => {
+		deselect();
+		cancel();
+		cancel_pending_default_template();
+		$G.triggerHandler("session-update");
+		new_local_session();
+		reset_file();
+		reset_selected_colors();
+		initialize_layer_stack_from_layers(document_info.layers);
+		set_magnification(default_magnification);
+
+		undos.length = 0;
+		redos.length = 0;
+		current_history_node = root_history_node = make_history_node({
+			name: localize("Open"),
+			icon: get_help_folder_icon("p_open.png"),
+			image_data: main_ctx.getImageData(0, 0, main_canvas.width, main_canvas.height),
+			layers: snapshot_layers(),
+			active_layer_id: get_active_layer().id,
+		});
+		history_node_to_cancel_to = null;
+		file_format = PSD_MIME_TYPE;
+		file_name = file instanceof File ? file.name : `${localize("untitled")}.psd`;
+		// file.path is available in Electron.
+		// @ts-ignore
+		system_file_handle = source_file_handle || file.path || null;
+		saved = true;
+		transparency = has_any_transparency(main_ctx);
+		update_title();
+		$canvas_area.trigger("resize");
+		$G.triggerHandler("history-update");
+		$G.triggerHandler("session-update");
+		if (document_info.notice) {
+			showMessageBox({
+				message: document_info.notice,
+				iconID: "warning",
+			});
+		}
+	});
+}
+
+/**
+ * @param {Blob} file
+ * @param {UserFileHandle} source_file_handle
+ */
+async function open_from_file(file, source_file_handle) {
 	// The browser isn't very smart about MIME types.
 	// It seems to look at the file extension, but not the actual file contents.
 	// This is particularly problematic for files with no extension, where file.type gives an empty string.
@@ -1022,6 +1196,10 @@ function open_from_file(file, source_file_handle) {
 		file.text().then(load_theme_from_text, (error) => {
 			show_error_message(localize("Paint cannot open this file."), error);
 		});
+		return;
+	}
+	if (await is_psd_blob(file)) {
+		await open_from_psd_file(file, source_file_handle);
 		return;
 	}
 	// Try loading as an image file first, then as a palette file, but show a combined error message if both fail.
@@ -1093,16 +1271,23 @@ function file_new() {
 		new_local_session();
 
 		reset_file();
-		reset_selected_colors();
-		reset_canvas_and_history(); // (with newly reset colors)
-		set_magnification(default_magnification);
-
-		$G.triggerHandler("session-update"); // autosave
+		apply_default_template_or_blank().then(() => {
+			$G.triggerHandler("session-update"); // autosave
+		}).catch((error) => {
+			show_error_message("Failed to start a new document.", error);
+			reset_selected_colors();
+			reset_canvas_and_history();
+			set_magnification(default_magnification);
+			$G.triggerHandler("session-update");
+		});
 	});
 }
 
 async function file_open() {
-	const { file, fileHandle } = await systemHooks.showOpenFileDialog({ formats: image_formats });
+	const { file, fileHandle } = await systemHooks.showOpenFileDialog({ formats: document_formats });
+	if (!file) {
+		return;
+	}
 	open_from_file(file, fileHandle);
 }
 
@@ -1188,14 +1373,15 @@ async function confirm_overwrite_capability() {
 }
 
 
-function file_save(maybe_saved_callback = () => { }, update_from_saved = true) {
+function file_save(maybe_saved_callback = () => { }, _update_from_saved = true) {
 	deselect();
 	// store and use file handle at this point in time, to avoid race conditions
 	const save_file_handle = system_file_handle;
-	if (!save_file_handle || file_name.match(/\.(svg|pdf)$/i)) {
-		return file_save_as(maybe_saved_callback, update_from_saved);
+	if (!save_file_handle) {
+		return file_save_as(maybe_saved_callback, _update_from_saved);
 	}
-	write_image_file(main_canvas, file_format, async (blob) => {
+	const blob = write_psd_blob();
+	(async () => {
 		// An error may be shown by `systemHooks.writeBlobToHandle`,
 		// or it may be unknown whether the save will succeed,
 		// so for now: true means definite success, false means failure or cancelation, and undefined means it's unknown.
@@ -1210,41 +1396,60 @@ function file_save(maybe_saved_callback = () => { }, update_from_saved = true) {
 		// However, we can still apply format-specific color reduction to the canvas,
 		// and call the "maybe saved" callback, which, as the name implies, is intended to handle the uncertainty.
 		if (success !== false) {
-			if (update_from_saved) {
-				update_from_saved_file(blob);
-			}
 			maybe_saved_callback();
 		}
-	});
+	})();
 }
 
-function file_save_as(maybe_saved_callback = () => { }, update_from_saved = true) {
+function file_save_as(maybe_saved_callback = () => { }, _update_from_saved = true) {
 	deselect();
 	systemHooks.showSaveFileDialog({
 		dialogTitle: localize("Save As"),
-		formats: image_formats,
+		formats: psd_formats,
 		defaultFileName: file_name,
 		defaultPath: typeof system_file_handle === "string" ? system_file_handle : null,
-		defaultFileFormatID: file_format,
-		getBlob: (new_file_type) => {
-			return new Promise((resolve) => {
-				write_image_file(main_canvas, new_file_type, (blob) => {
-					resolve(blob);
-				});
-			});
-		},
-		savedCallbackUnreliable: ({ newFileName, newFileFormatID, newFileHandle, newBlob }) => {
+		defaultFileFormatID: PSD_MIME_TYPE,
+		getBlob: () => Promise.resolve(write_psd_blob()),
+		savedCallbackUnreliable: ({ newFileName, newFileHandle }) => {
 			saved = true;
 			system_file_handle = newFileHandle;
 			file_name = newFileName;
-			file_format = newFileFormatID;
+			file_format = PSD_MIME_TYPE;
 			update_title();
 			maybe_saved_callback();
-			if (update_from_saved) {
-				update_from_saved_file(newBlob);
-			}
 		},
 	});
+}
+
+/**
+ * @param {ImageFileFormat[]} formats
+ * @param {string} default_format
+ * @param {string} dialog_title
+ */
+function file_export_with_formats(formats, default_format, dialog_title) {
+	deselect();
+	composite_layers();
+	const extension = formats.find((format) => format.formatID === default_format)?.extensions[0] || "png";
+	const base_name = file_name.replace(/\.[^.]+$/, "");
+	systemHooks.showSaveFileDialog({
+		dialogTitle: dialog_title,
+		formats,
+		defaultFileName: `${base_name}.${extension}`,
+		defaultFileFormatID: default_format,
+		getBlob: (new_file_type) => new Promise((resolve) => {
+			write_image_file(main_canvas, new_file_type, resolve);
+		}),
+		savedCallbackUnreliable: () => {},
+	});
+}
+
+function file_export_png() {
+	const png_formats = image_formats.filter((format) => format.formatID === "image/png");
+	file_export_with_formats(png_formats, "image/png", "Export PNG");
+}
+
+function file_export_as() {
+	file_export_with_formats(image_formats, "image/png", "Export As");
 }
 
 function file_print() {
@@ -1590,7 +1795,12 @@ function show_about_paint() {
 		event.preventDefault();
 		are_you_sure(() => {
 			exit_fullscreen_if_ios();
-			location.reload();
+			const flush = window.flush_current_session?.() ?? Promise.resolve();
+			Promise.resolve(flush).catch((error) => {
+				window.console?.warn("Failed to flush session before update reload.", error);
+			}).finally(() => {
+				location.reload();
+			});
 		});
 	});
 
@@ -1790,16 +2000,45 @@ function show_news() {
 
 // @TODO: DRY between these functions and open_from_* functions further?
 
+/** @type {{ x: number, y: number } | null} */
+let last_copied_selection_position = null;
+
+function remember_copied_selection_position() {
+	if (!selection) {
+		return;
+	}
+	last_copied_selection_position = { x: selection.x, y: selection.y };
+}
+
+/**
+ * @param {{ in_place?: boolean }} [options]
+ */
+function get_paste_position(options = {}) {
+	if (options.in_place) {
+		if (selection) {
+			return { x: selection.x, y: selection.y };
+		}
+		if (last_copied_selection_position) {
+			return { x: last_copied_selection_position.x, y: last_copied_selection_position.y };
+		}
+	}
+	return {
+		x: Math.max(0, Math.ceil($canvas_area.scrollLeft() / magnification)),
+		y: Math.max(0, Math.ceil(($canvas_area.scrollTop()) / magnification)),
+	};
+}
+
 /**
  * @param {Blob} blob
+ * @param {{ in_place?: boolean }} [options]
  */
-function paste_image_from_file(blob) {
+function paste_image_from_file(blob, options = {}) {
 	read_image_file(blob, (error, info) => {
 		if (error) {
 			show_file_format_errors({ as_image_error: error });
 			return;
 		}
-		paste(info.image || make_canvas(info.image_data));
+		paste(info.image || make_canvas(info.image_data), options);
 	});
 }
 
@@ -1815,8 +2054,13 @@ async function choose_file_to_paste() {
 
 /**
  * @param {HTMLImageElement | HTMLCanvasElement} img_or_canvas
+ * @param {{ in_place?: boolean }} [options]
  */
-function paste(img_or_canvas) {
+function paste(img_or_canvas, options = {}) {
+	if (block_if_active_layer_locked()) {
+		return;
+	}
+	const paste_position = get_paste_position(options);
 
 	if (img_or_canvas.width > main_canvas.width || img_or_canvas.height > main_canvas.height) {
 		const message = localize("The image in the clipboard is larger than the bitmap.") + "\n" +
@@ -1872,8 +2116,8 @@ function paste(img_or_canvas) {
 		deselect();
 		select_tool(get_tool_by_id(TOOL_SELECT));
 
-		const x = Math.max(0, Math.ceil($canvas_area.scrollLeft() / magnification));
-		const y = Math.max(0, Math.ceil(($canvas_area.scrollTop()) / magnification));
+		const x = paste_position.x;
+		const y = paste_position.y;
 		// Nevermind, canvas, isn't aligned to the right in RTL layout!
 		// let x = Math.max(0, Math.ceil($canvas_area.scrollLeft() / magnification));
 		// if (get_direction() === "rtl") {
@@ -1913,26 +2157,162 @@ function render_history_as_gif() {
 
 	$win.center();
 
-	try {
-		const width = main_canvas.width;
-		const height = main_canvas.height;
+	const source_width = main_canvas.width;
+	const source_height = main_canvas.height;
+	// Walk the full parent chain, not `undos`. Undo is capped; GIF should keep every frame.
+	const frame_history_nodes = get_history_timeline(current_history_node).filter((node) => node?.image_data);
+	if (frame_history_nodes.length === 0) {
+		$win.close();
+		show_error_message("Failed to render GIF.", new Error("No history frames have image data."));
+		return;
+	}
+
+	let cancelled = false;
+	/** @type {{ abort: () => void } | null} */
+	let active_gif = null;
+	$win.on("close", () => {
+		cancelled = true;
+		active_gif?.abort();
+	});
+
+	const source_canvas = make_canvas(1, 1);
+	const selection_canvas = make_canvas(1, 1);
+
+	/**
+	 * @param {HistoryNode} node
+	 * @param {PixelCanvas} dest
+	 */
+	const draw_history_frame = async (node, dest) => {
+		const image_data = node.image_data;
+		if (!image_data) {
+			return;
+		}
+		dest.ctx.clearRect(0, 0, dest.width, dest.height);
+		dest.ctx.disable_image_smoothing();
+		const dest_w = Math.max(1, Math.round(image_data.width * dest.width / source_width));
+		const dest_h = Math.max(1, Math.round(image_data.height * dest.height / source_height));
+		try {
+			if (typeof createImageBitmap === "function") {
+				const bitmap = await createImageBitmap(image_data, {
+					resizeWidth: dest_w,
+					resizeHeight: dest_h,
+					resizeQuality: "pixelated",
+				});
+				dest.ctx.drawImage(bitmap, 0, 0);
+				bitmap.close();
+				if (node.selection_image_data) {
+					const sel_w = Math.max(1, Math.round(node.selection_image_data.width * dest.width / source_width));
+					const sel_h = Math.max(1, Math.round(node.selection_image_data.height * dest.height / source_height));
+					const sel_bitmap = await createImageBitmap(node.selection_image_data, {
+						resizeWidth: sel_w,
+						resizeHeight: sel_h,
+						resizeQuality: "pixelated",
+					});
+					dest.ctx.drawImage(
+						sel_bitmap,
+						(node.selection_x || 0) * dest.width / source_width,
+						(node.selection_y || 0) * dest.height / source_height
+					);
+					sel_bitmap.close();
+				}
+				return;
+			}
+		} catch (error) {
+			if (!is_out_of_memory_error(error)) {
+				window.console?.warn("createImageBitmap failed while rendering history GIF; falling back to a canvas copy.", error);
+			} else {
+				throw error;
+			}
+		}
+		if (source_canvas.width !== image_data.width || source_canvas.height !== image_data.height) {
+			source_canvas.width = image_data.width;
+			source_canvas.height = image_data.height;
+			source_canvas.ctx.disable_image_smoothing();
+		} else {
+			source_canvas.ctx.clearRect(0, 0, source_canvas.width, source_canvas.height);
+		}
+		source_canvas.ctx.putImageData(image_data, 0, 0);
+		if (node.selection_image_data) {
+			if (
+				selection_canvas.width !== node.selection_image_data.width ||
+				selection_canvas.height !== node.selection_image_data.height
+			) {
+				selection_canvas.width = node.selection_image_data.width;
+				selection_canvas.height = node.selection_image_data.height;
+				selection_canvas.ctx.disable_image_smoothing();
+			}
+			selection_canvas.ctx.putImageData(node.selection_image_data, 0, 0);
+			source_canvas.ctx.drawImage(selection_canvas, node.selection_x || 0, node.selection_y || 0);
+		}
+		dest.ctx.drawImage(source_canvas, 0, 0, dest_w, dest_h);
+	};
+
+	/**
+	 * @param {number} max_copy_bytes
+	 * @param {number} max_dimension
+	 * @param {number} max_frames
+	 */
+	const encode_gif = async (max_copy_bytes, max_dimension, max_frames) => {
+		if (cancelled) {
+			return null;
+		}
+		active_gif?.abort();
+		const plan = plan_history_gif({
+			frame_count: frame_history_nodes.length,
+			width: source_width,
+			height: source_height,
+			max_copy_bytes,
+			max_dimension,
+			max_frames,
+		});
+		const frames = plan.frame_indices.map((index) => frame_history_nodes[index]);
 		const gif = new GIF({
-			//workers: Math.min(5, Math.floor(undos.length/50)+1),
 			workerScript: "lib/gif.js/gif.worker.js",
-			width,
-			height,
+			workers: 1,
+			width: plan.width,
+			height: plan.height,
 		});
-
-		$win.on("close", () => {
-			gif.abort();
+		active_gif = gif;
+		const finished = new Promise((resolve) => {
+			gif.on("progress", (p) => {
+				$progress.val(0.15 + p * 0.85);
+				$progress_percent.text(`${~~((0.15 + p * 0.85) * 100)}%`);
+			});
+			gif.on("finished", (blob) => {
+				resolve({ blob, width: plan.width, height: plan.height });
+			});
+			gif.on("abort", () => resolve(null));
 		});
+		const gif_canvas = make_canvas(plan.width, plan.height);
+		for (let i = 0; i < frames.length; i++) {
+			if (cancelled) {
+				gif.abort();
+				return null;
+			}
+			await draw_history_frame(frames[i], gif_canvas);
+			gif.addFrame(gif_canvas, { delay: HISTORY_GIF_FRAME_DELAY_MS, copy: true });
+			$progress.val((i + 1) / frames.length * 0.15);
+			$progress_percent.text(`${~~(((i + 1) / frames.length * 0.15) * 100)}%`);
+		}
+		gif.render();
+		return await finished;
+	};
 
-		gif.on("progress", (p) => {
-			$progress.val(p);
-			$progress_percent.text(`${~~(p * 100)}%`);
-		});
-
-		gif.on("finished", (blob) => {
+	(async () => {
+		try {
+			let result = null;
+			try {
+				result = await encode_gif(64 * 1024 * 1024, 1280, Infinity);
+			} catch (error) {
+				if (!is_out_of_memory_error(error)) {
+					throw error;
+				}
+				result = await encode_gif(16 * 1024 * 1024, 640, Infinity);
+			}
+			if (cancelled || !result) {
+				return;
+			}
+			const { blob, width, height } = result;
 			$win.title("Rendered GIF");
 			const blob_url = URL.createObjectURL(blob);
 			$output.empty().append(
@@ -1982,25 +2362,14 @@ function render_history_as_gif() {
 			});
 			$cancel.appendTo($win.$buttons);
 			$win.center();
-		});
-
-		const gif_canvas = make_canvas(width, height);
-		const frame_history_nodes = [...undos, current_history_node];
-		for (const frame_history_node of frame_history_nodes) {
-			gif_canvas.ctx.clearRect(0, 0, gif_canvas.width, gif_canvas.height);
-			gif_canvas.ctx.putImageData(frame_history_node.image_data, 0, 0);
-			if (frame_history_node.selection_image_data) {
-				const selection_canvas = make_canvas(frame_history_node.selection_image_data);
-				gif_canvas.ctx.drawImage(selection_canvas, frame_history_node.selection_x, frame_history_node.selection_y);
-			}
-			gif.addFrame(gif_canvas, { delay: 200, copy: true });
+		} catch (err) {
+			$win.close();
+			const message = is_out_of_memory_error(err) ?
+				"Failed to render GIF. The document or history is too large for available memory." :
+				"Failed to render GIF.";
+			show_error_message(message, err);
 		}
-		gif.render();
-
-	} catch (err) {
-		$win.close();
-		show_error_message("Failed to render GIF.", err);
-	}
+	})();
 }
 
 /**
@@ -2033,7 +2402,18 @@ function go_to_history_node(target_history_node, canceling) {
 	saved = false;
 	update_title();
 
-	main_ctx.copy(target_history_node.image_data);
+	if (target_history_node.layers?.length) {
+		// Which layer is selected isn't part of the undo history, so undo/redo keeps
+		// you on the layer you're working on, as long as that layer exists in the target state.
+		const layer_id_to_select =
+			target_history_node.layers.some((layer_snapshot) => layer_snapshot.id === active_layer_id) ?
+				active_layer_id :
+				target_history_node.active_layer_id;
+		restore_layer_snapshot(target_history_node.layers, layer_id_to_select);
+	} else {
+		initialize_layer_stack(target_history_node.image_data);
+	}
+	restore_drawing_settings(target_history_node);
 	if (target_history_node.selection_image_data) {
 		if (selection) {
 			selection.destroy();
@@ -2053,6 +2433,7 @@ function go_to_history_node(target_history_node, canceling) {
 			target_history_node.selection_image_data.height,
 			target_history_node.selection_image_data,
 		);
+		selection.set_layer_slice_data(target_history_node.selection_layer_slices);
 	}
 	if (target_history_node.textbox_text != null) {
 		if (textbox) {
@@ -2063,8 +2444,7 @@ function go_to_history_node(target_history_node, canceling) {
 			text_tool_font[k] = v;
 		}
 
-		selected_colors.foreground = target_history_node.foreground_color;
-		selected_colors.background = target_history_node.background_color;
+		// (colors are restored for every state by restore_drawing_settings, above)
 		tool_transparent_mode = target_history_node.tool_transparent_mode;
 		$G.trigger("option-changed");
 
@@ -2108,34 +2488,13 @@ function go_to_history_node(target_history_node, canceling) {
 		latest_node = futures[0];
 		redos.unshift(latest_node);
 	}
+	trim_undo_stack();
 	// window.console?.log("new undos:", undos);
 	// window.console?.log("new redos:", redos);
 
 	$canvas_area.trigger("resize");
 	$G.triggerHandler("session-update"); // autosave
 	$G.triggerHandler("history-update"); // update history view
-	$G.triggerHandler("history-jumped");
-}
-
-/** @type {() => void} */
-let beforeUndoableCanvasSnapshot = () => {};
-/**
- * Called after an undoable callback runs and before the flat document is snapshotted from main_canvas.
- * Used by KS-Paint layers to composite layer buffers onto main_canvas so history stays consistent.
- * @param {() => void} fn
- */
-function setBeforeUndoableCanvasSnapshot(fn) {
-	beforeUndoableCanvasSnapshot = fn || (() => {});
-}
-
-/** @type {null | ((meta: ActionMetadata, callback: (() => void) | undefined) => false | void)} */
-let undoableInterceptor = null;
-/**
- * Optional hook run at the start of every undoable. Return false to abort (callback will not run).
- * @param {null | ((meta: ActionMetadata, callback: (() => void) | undefined) => false | void)} fn
- */
-function setUndoableInterceptor(fn) {
-	undoableInterceptor = fn;
 }
 
 // Note: This function is part of the API.
@@ -2145,12 +2504,6 @@ function setUndoableInterceptor(fn) {
  * @param {function=} callback
  */
 function undoable({ name, icon, use_loose_canvas_changes, soft, assume_saved }, callback) {
-	if (undoableInterceptor) {
-		const intercepted = undoableInterceptor({ name, icon, use_loose_canvas_changes, soft, assume_saved }, callback);
-		if (intercepted === false) {
-			return;
-		}
-	}
 	if (!use_loose_canvas_changes) {
 		/* For performance (especially with two finger panning), I'm disabling this safety check that preserves certain document states in the history.
 		const current_image_data = main_ctx.getImageData(0, 0, main_canvas.width, main_canvas.height);
@@ -2168,12 +2521,12 @@ function undoable({ name, icon, use_loose_canvas_changes, soft, assume_saved }, 
 
 	const before_callback_history_node = current_history_node;
 	callback?.();
+	composite_layers();
 	if (current_history_node !== before_callback_history_node) {
 		show_error_message(`History node switched during undoable callback for ${name}. This shouldn't happen.`);
 		window.console?.log(`History node switched during undoable callback for ${name}, from`, before_callback_history_node, "to", current_history_node);
 	}
 
-	beforeUndoableCanvasSnapshot();
 	const image_data = main_ctx.getImageData(0, 0, main_canvas.width, main_canvas.height);
 
 	redos.length = 0;
@@ -2181,9 +2534,12 @@ function undoable({ name, icon, use_loose_canvas_changes, soft, assume_saved }, 
 
 	const new_history_node = make_history_node({
 		image_data,
+		layers: snapshot_layers(current_history_node.layers),
+		active_layer_id: get_active_layer().id,
 		selection_image_data: selection && selection.canvas.ctx.getImageData(0, 0, selection.canvas.width, selection.canvas.height),
 		selection_x: selection && selection.x,
 		selection_y: selection && selection.y,
+		selection_layer_slices: selection && selection.get_layer_slice_data(),
 		textbox_text: textbox && textbox.$editor.val(),
 		textbox_x: textbox && textbox.x,
 		textbox_y: textbox && textbox.y,
@@ -2194,6 +2550,7 @@ function undoable({ name, icon, use_loose_canvas_changes, soft, assume_saved }, 
 		foreground_color: selected_colors.foreground,
 		background_color: selected_colors.background,
 		ternary_color: selected_colors.ternary,
+		tool_sizes: capture_drawing_settings().tool_sizes,
 		parent: current_history_node,
 		name,
 		icon,
@@ -2201,10 +2558,50 @@ function undoable({ name, icon, use_loose_canvas_changes, soft, assume_saved }, 
 	});
 	current_history_node.futures.push(new_history_node);
 	current_history_node = new_history_node;
+	trim_undo_stack();
 
 	$G.triggerHandler("history-update"); // update history view
 
 	$G.triggerHandler("session-update"); // autosave
+}
+/**
+ * Creates an undo point for a change to the drawing settings (colors, tool sizes).
+ * These don't touch the canvas, so the document isn't marked as having unsaved changes.
+ *
+ * With `merge_consecutive`, a change of the same kind made directly after another
+ * (with no drawing in between) updates that undo point instead of adding a new one,
+ * so dragging through the tool size options doesn't flood the history.
+ *
+ * @param {{name: string, icon?: HTMLImageElement | HTMLCanvasElement, merge_consecutive?: boolean}} options
+ * @param {()=> void} callback - applies the change; it must not touch the canvas
+ * @returns {boolean} whether the settings actually changed (and thus whether an undo point was created)
+ */
+function undoable_option_change({ name, icon, merge_consecutive = false }, callback) {
+	const settings_before = capture_drawing_settings();
+	callback();
+	const settings_after = capture_drawing_settings();
+	if (drawing_settings_match(settings_before, settings_after)) {
+		return false;
+	}
+	if (pointer_active) {
+		// Mid-stroke (e.g. changing the size with [ or ] while drawing).
+		// Splitting the stroke across two history states would break undo, so
+		// the change just rides along with the undo point the tool creates on pointerup.
+		return false;
+	}
+	if (
+		merge_consecutive &&
+		current_history_node.parent && // never fold a change into the document's initial state
+		current_history_node.name === name &&
+		current_history_node.futures.length === 0
+	) {
+		Object.assign(current_history_node, settings_after);
+		$G.triggerHandler("history-update"); // update history view
+		$G.triggerHandler("session-update"); // autosave
+	} else {
+		undoable({ name, icon, use_loose_canvas_changes: true, assume_saved: true });
+	}
+	return true;
 }
 /**
  * @param {ActionMetadataUpdate} undoable_meta
@@ -2213,11 +2610,14 @@ function undoable({ name, icon, use_loose_canvas_changes, soft, assume_saved }, 
 function make_or_update_undoable(undoable_meta, undoable_action) {
 	if (current_history_node.futures.length === 0 && undoable_meta.match(current_history_node)) {
 		undoable_action();
-		beforeUndoableCanvasSnapshot();
+		composite_layers();
 		current_history_node.image_data = main_ctx.getImageData(0, 0, main_canvas.width, main_canvas.height);
+		current_history_node.layers = snapshot_layers(current_history_node.layers);
+		current_history_node.active_layer_id = get_active_layer().id;
 		current_history_node.selection_image_data = selection && selection.canvas.ctx.getImageData(0, 0, selection.canvas.width, selection.canvas.height);
 		current_history_node.selection_x = selection && selection.x;
 		current_history_node.selection_y = selection && selection.y;
+		current_history_node.selection_layer_slices = selection && selection.get_layer_slice_data();
 		if (undoable_meta.update_name) {
 			current_history_node.name = undoable_meta.name;
 		}
@@ -2240,6 +2640,38 @@ function undo() {
 	go_to_history_node(target_history_node);
 
 	return true;
+}
+
+/** How far Ctrl+Z / Edit > Undo can go. GIF export uses the full history tree, not this cap. */
+const MAX_UNDO_STATES = 30;
+
+/**
+ * Keep only the latest undo steps for Ctrl+Z.
+ * Older nodes stay on the tree with `image_data` so history GIF can still include them.
+ * Layer snapshots on evicted steps are dropped; they are only needed to undo with layers intact.
+ */
+function trim_undo_stack() {
+	while (undos.length > MAX_UNDO_STATES) {
+		const evicted = undos.shift();
+		if (!evicted || evicted === current_history_node || redos.includes(evicted)) {
+			continue;
+		}
+		evicted.layers = undefined;
+	}
+}
+
+/**
+ * Root-to-node timeline, including `node`. Independent of the capped `undos` array.
+ * @param {HistoryNode | null | undefined} node
+ * @returns {HistoryNode[]}
+ */
+function get_history_timeline(node) {
+	const timeline = node ? get_history_ancestors(node) : [];
+	timeline.reverse();
+	if (node) {
+		timeline.push(node);
+	}
+	return timeline;
 }
 
 // @TODO: use Clippy.js instead for potentially annoying tips
@@ -2521,7 +2953,7 @@ function meld_textbox_into_canvas(going_to_history_node) {
 			name: "Finish Text",
 			icon: get_icon_for_tool(get_tool_by_id(TOOL_TEXT)),
 		}, () => {
-			main_ctx.drawImage(textbox.canvas, textbox.x, textbox.y);
+			get_active_layer_context().drawImage(textbox.canvas, textbox.x, textbox.y);
 			textbox.destroy();
 			textbox = null;
 		});
@@ -2541,8 +2973,9 @@ function deselect(going_to_history_node) {
 		meld_textbox_into_canvas(going_to_history_node);
 	}
 	for (const selected_tool of selected_tools) {
-		selected_tool.end?.(main_ctx);
+		selected_tool.end?.(get_active_layer_context());
 	}
+	composite_layers();
 }
 
 /**
@@ -2561,6 +2994,9 @@ function delete_selection(meta = {}) {
 	}
 }
 function select_all() {
+	if (block_if_active_layer_locked()) {
+		return;
+	}
 	deselect();
 	select_tool(get_tool_by_id(TOOL_SELECT));
 
@@ -2571,6 +3007,160 @@ function select_all() {
 	}, () => {
 		selection = new OnCanvasSelection(0, 0, main_canvas.width, main_canvas.height);
 	});
+}
+
+/**
+ * Lift non-transparent pixels from the active layer into a floating selection.
+ * @returns {boolean}
+ */
+function lift_opaque_layer_contents_into_selection() {
+	const layer = get_active_layer();
+	if (!layer) {
+		return false;
+	}
+	const width = layer.canvas.width;
+	const height = layer.canvas.height;
+	if (width < 1 || height < 1) {
+		return false;
+	}
+	const id = layer.ctx.getImageData(0, 0, width, height);
+	let x_min = width;
+	let y_min = height;
+	let x_max = -1;
+	let y_max = -1;
+	for (let i = 0; i < id.data.length; i += 4) {
+		if (id.data[i + 3] === 0) {
+			continue;
+		}
+		const px = (i / 4) % width;
+		const py = Math.floor((i / 4) / width);
+		if (px < x_min) { x_min = px; }
+		if (py < y_min) { y_min = py; }
+		if (px > x_max) { x_max = px; }
+		if (py > y_max) { y_max = py; }
+	}
+	if (x_max < 0) {
+		return false;
+	}
+	const sel_w = x_max - x_min + 1;
+	const sel_h = y_max - y_min + 1;
+	const contents = make_canvas(sel_w, sel_h);
+	contents.ctx.drawImage(layer.canvas, x_min, y_min, sel_w, sel_h, 0, 0, sel_w, sel_h);
+	select_tool(get_tool_by_id(TOOL_SELECT));
+	selection = new OnCanvasSelection(x_min, y_min, sel_w, sel_h, contents);
+	selection.cut_out_background({ all_layers: false });
+	return true;
+}
+
+/**
+ * Duplicate the active layer above itself and select that copy's pixels.
+ * @returns {boolean}
+ */
+function duplicate_layer_and_select_contents() {
+	if (!get_active_layer()) {
+		return false;
+	}
+	undoable({
+		name: "Duplicate Layer",
+		icon: get_icon_for_tool(get_tool_by_id(TOOL_SELECT)),
+	}, () => {
+		if (selection) {
+			selection.draw();
+			selection.destroy();
+			selection = null;
+		}
+		if (!duplicate_layer()) {
+			return;
+		}
+		lift_opaque_layer_contents_into_selection();
+	});
+	return true;
+}
+
+/**
+ * Stamp a copy of the selection onto the canvas, keeping the floating selection.
+ */
+function duplicate_selection() {
+	if (!selection) {
+		return false;
+	}
+	undoable({
+		name: "Duplicate Selection",
+		icon: get_icon_for_tool(get_tool_by_id(TOOL_SELECT)),
+		soft: true,
+	}, () => {
+		selection.draw();
+	});
+	return true;
+}
+
+/**
+ * Invert what is selected: floating selection becomes everything else on the canvas.
+ */
+function invert_selection() {
+	if (!selection) {
+		select_all();
+		return true;
+	}
+	undoable({
+		name: "Invert Selection",
+		icon: get_icon_for_tool(get_tool_by_id(TOOL_SELECT)),
+		soft: true,
+	}, () => {
+		const ox = selection.x;
+		const oy = selection.y;
+		const ow = selection.width;
+		const oh = selection.height;
+		const w = main_canvas.width;
+		const h = main_canvas.height;
+
+		const full = make_canvas(w, h);
+		full.ctx.drawImage(get_active_layer().canvas, 0, 0);
+		full.ctx.drawImage(selection.canvas, ox, oy);
+
+		const inverse = make_canvas(full);
+		const sel_data = selection.canvas.ctx.getImageData(0, 0, ow, oh);
+		const inv_data = inverse.ctx.getImageData(ox, oy, ow, oh);
+		for (let i = 0; i < sel_data.data.length; i += 4) {
+			if (sel_data.data[i + 3] > 0) {
+				inv_data.data[i + 0] = 0;
+				inv_data.data[i + 1] = 0;
+				inv_data.data[i + 2] = 0;
+				inv_data.data[i + 3] = 0;
+			}
+		}
+		inverse.ctx.putImageData(inv_data, ox, oy);
+
+		const floated = make_canvas(selection.canvas);
+		selection.destroy();
+		selection = null;
+
+		if (transparency) {
+			get_active_layer_context().clearRect(0, 0, w, h);
+		} else {
+			const drawing_ctx = get_active_layer_context();
+			drawing_ctx.fillStyle = selected_colors.background;
+			drawing_ctx.fillRect(0, 0, w, h);
+		}
+		get_active_layer_context().drawImage(floated, ox, oy);
+
+		selection = new OnCanvasSelection(0, 0, w, h, inverse);
+	});
+	return true;
+}
+
+/**
+ * Hold-Y rotate mode helper (also used if something calls free-transform).
+ */
+function selection_free_transform() {
+	if (!selection) {
+		return false;
+	}
+	selection.set_rotate_modifier(true);
+	if (window.$status_text) {
+		window.$status_text.text("Hold Y and drag a selection edge/corner to rotate");
+	}
+	return true;
 }
 
 const ctrlOrCmd = /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform) ? "⌘" : "Ctrl";
@@ -2628,6 +3218,7 @@ function edit_copy(execCommandFallback) {
 		}
 		navigator.clipboard.writeText(text);
 	} else if (selection && selection.canvas) {
+		remember_copied_selection_position();
 		if (!navigator.clipboard || !navigator.clipboard.write) {
 			if (execCommandFallback) {
 				return try_exec_command("copy");
@@ -2674,8 +3265,10 @@ function edit_cut(execCommandFallback) {
 }
 /**
  * @param {boolean} [execCommandFallback]
+ * @param {boolean} [in_place]
  */
-async function edit_paste(execCommandFallback) {
+async function edit_paste(execCommandFallback, in_place) {
+	const paste_options = { in_place: !!in_place };
 	if (
 		document.activeElement instanceof HTMLInputElement ||
 		document.activeElement instanceof HTMLTextAreaElement
@@ -2705,7 +3298,7 @@ async function edit_paste(execCommandFallback) {
 	try {
 		const clipboardItems = await navigator.clipboard.read();
 		const blob = await clipboardItems[0].getType("image/png");
-		paste_image_from_file(blob);
+		paste_image_from_file(blob, paste_options);
 	} catch (error) {
 		if (error.name === "NotFoundError") {
 			try {
@@ -2714,7 +3307,7 @@ async function edit_paste(execCommandFallback) {
 					const uris = get_uris(clipboardText);
 					if (uris.length > 0) {
 						load_image_from_uri(uris[0]).then((info) => {
-							paste(info.image || make_canvas(info.image_data));
+							paste(info.image || make_canvas(info.image_data), paste_options);
 						}, (error) => {
 							show_resource_load_error_message(error);
 						});
@@ -2749,6 +3342,9 @@ function image_invert_colors() {
 }
 
 function clear() {
+	if (block_if_active_layer_locked()) {
+		return;
+	}
 	deselect();
 	cancel();
 	undoable({
@@ -2759,10 +3355,11 @@ function clear() {
 		update_title();
 
 		if (transparency) {
-			main_ctx.clearRect(0, 0, main_canvas.width, main_canvas.height);
+			get_active_layer_context().clearRect(0, 0, main_canvas.width, main_canvas.height);
 		} else {
-			main_ctx.fillStyle = selected_colors.background;
-			main_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
+			const drawing_ctx = get_active_layer_context();
+			drawing_ctx.fillStyle = selected_colors.background;
+			drawing_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
 		}
 	});
 }
@@ -2892,11 +3489,11 @@ function get_tool_by_id(id) {
 			return tools[i];
 		}
 	}
-	// for (let i = 0; i < extra_tools.length; i++) {
-	// 	if (extra_tools[i].id == id) {
-	// 		return extra_tools[i];
-	// 	}
-	// }
+	for (let i = 0; i < hidden_tools.length; i++) {
+		if (hidden_tools[i].id == id) {
+			return hidden_tools[i];
+		}
+	}
 }
 
 // hacky but whatever
@@ -3124,22 +3721,40 @@ function switch_to_polychrome_palette() {
 
 }
 
+/**
+ * Apply a built-in color palette by id ("classic", "kp", "winter").
+ * @param {string} id
+ */
+function apply_named_palette(id) {
+	current_palette_id = id;
+	if (id !== "winter") {
+		last_non_winter_palette_id = id;
+	}
+	const source = get_named_palette(id);
+	palette = copy_palette(source);
+	polychrome_palette = palette;
+	if (window.$colorbox) {
+		$colorbox.rebuild_palette();
+	}
+}
+
 function make_opaque() {
 	undoable({
 		name: "Make Opaque",
 		icon: get_help_folder_icon("p_make_opaque.png"),
 	}, () => {
-		main_ctx.save();
-		main_ctx.globalCompositeOperation = "destination-atop";
+		const drawing_ctx = get_active_layer_context();
+		drawing_ctx.save();
+		drawing_ctx.globalCompositeOperation = "destination-atop";
 
-		main_ctx.fillStyle = selected_colors.background;
-		main_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
+		drawing_ctx.fillStyle = selected_colors.background;
+		drawing_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
 
 		// in case the selected background color is transparent/translucent
-		main_ctx.fillStyle = "white";
-		main_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
+		drawing_ctx.fillStyle = "white";
+		drawing_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
 
-		main_ctx.restore();
+		drawing_ctx.restore();
 	});
 }
 
@@ -3159,18 +3774,7 @@ function resize_canvas_without_saving_dimensions(unclamped_width, unclamped_heig
 			icon: undoable_meta.icon || get_help_folder_icon("p_stretch_both.png"),
 		}, () => {
 			try {
-				const image_data = main_ctx.getImageData(0, 0, new_width, new_height);
-				main_canvas.width = new_width;
-				main_canvas.height = new_height;
-				main_ctx.disable_image_smoothing();
-
-				if (!transparency) {
-					main_ctx.fillStyle = selected_colors.background;
-					main_ctx.fillRect(0, 0, main_canvas.width, main_canvas.height);
-				}
-
-				const temp_canvas = make_canvas(image_data);
-				main_ctx.drawImage(temp_canvas, 0, 0);
+				resize_layer_stack(new_width, new_height);
 			} catch (exception) {
 				if (exception.name === "NS_ERROR_FAILURE") {
 					// or localize("There is not enough memory or resources to complete operation.")
@@ -3294,6 +3898,7 @@ function image_attributes() {
 		const unit = String($units.find(":checked").val());
 
 		const was_monochrome = monochrome;
+		const was_transparent = transparency;
 		let monochrome_info;
 
 		image_attributes.unit = unit;
@@ -3329,7 +3934,7 @@ function image_attributes() {
 		const height = Number($height.val()) * unit_to_px;
 		resize_canvas_and_save_dimensions(~~width, ~~height);
 
-		if (!transparency && has_any_transparency(main_ctx)) {
+		if (was_transparent && !transparency && has_any_transparency(main_ctx)) {
 			make_opaque();
 		}
 
@@ -3397,8 +4002,9 @@ function show_convert_to_black_and_white() {
 			icon: get_help_folder_icon("p_monochrome.png"),
 		}, () => {
 			threshold = Number($slider.val());
-			main_ctx.copy(original_canvas);
-			threshold_black_and_white(main_ctx, threshold);
+			const drawing_ctx = get_active_layer_context();
+			drawing_ctx.copy(original_canvas);
+			threshold_black_and_white(drawing_ctx, threshold);
 		});
 	};
 	update_threshold();
@@ -3416,7 +4022,7 @@ function show_convert_to_black_and_white() {
 				name: "Cancel Make Monochrome",
 				icon: get_help_folder_icon("p_color.png"),
 			}, () => {
-				main_ctx.copy(original_canvas);
+				get_active_layer_context().copy(original_canvas);
 			});
 		}
 		$w.close();
@@ -4133,7 +4739,7 @@ function update_from_saved_file(blob) {
 			icon: get_help_folder_icon("p_save.png"),
 			assume_saved: true, // prevent setting saved to false
 		}, () => {
-			main_ctx.copy(info.image || info.image_data);
+			initialize_layer_stack(info.image || info.image_data);
 		});
 	});
 }
@@ -4252,11 +4858,11 @@ function show_multi_user_setup_dialog(from_current_document) {
 
 export {
 	$this_version_news,
-	apply_file_format_and_palette_info, are_you_sure, cancel, change_some_url_params, change_url_param, choose_file_to_paste, cleanup_bitmap_view, clear, confirm_overwrite_capability, delete_selection, deselect, detect_monochrome,
-	edit_copy, edit_cut, edit_paste, exit_fullscreen_if_ios, file_load_from_url, file_new, file_open, file_print, file_save,
-	file_save_as, getSelectionText, get_all_url_params, get_history_ancestors, get_tool_by_id, get_uris, get_url_param, go_to_history_node, handle_keyshortcuts, has_any_transparency, image_attributes, image_flip_and_rotate, image_invert_colors, image_stretch_and_skew, load_image_from_uri, load_theme_from_text, make_history_node, make_monochrome_palette, make_monochrome_pattern, make_opaque, make_or_update_undoable, make_stripe_pattern, meld_selection_into_canvas,
-	meld_textbox_into_canvas, open_from_file, open_from_image_info, paste, paste_image_from_file, please_enter_a_number, read_image_file, redo, render_canvas_view, render_history_as_gif, reset_canvas_and_history, reset_file, reset_selected_colors, resize_canvas_and_save_dimensions, resize_canvas_without_saving_dimensions, sanity_check_blob, save_as_prompt, save_selection_to_file, select_all, select_tool, select_tools, set_all_url_params, set_magnification, setBeforeUndoableCanvasSnapshot, setUndoableInterceptor, show_about_paint, show_convert_to_black_and_white, show_custom_zoom_window, show_document_history, show_error_message, show_file_format_errors, show_multi_user_setup_dialog, show_news, show_resource_load_error_message, switch_to_polychrome_palette, toggle_grid,
-	toggle_thumbnail, try_exec_command, undo, undoable, update_canvas_rect, update_css_classes_for_conditional_messages, update_disable_aa, update_from_saved_file, update_helper_layer,
+	apply_file_format_and_palette_info, apply_named_palette, are_you_sure, cancel, change_some_url_params, change_url_param, choose_file_to_paste, cleanup_bitmap_view, clear, confirm_overwrite_capability, delete_selection, deselect, detect_monochrome,
+	duplicate_layer_and_select_contents, duplicate_selection, edit_copy, edit_cut, edit_paste, exit_fullscreen_if_ios, file_export_as, file_export_png, file_load_from_url, file_new, file_open, file_print, file_save, remember_copied_selection_position,
+	file_save_as, getSelectionText, get_all_url_params, get_history_ancestors, get_tool_by_id, get_uris, get_url_param, go_to_history_node, handle_keyshortcuts, has_any_transparency, image_attributes, image_flip_and_rotate, image_invert_colors, image_stretch_and_skew, invert_selection, load_image_from_uri, load_theme_from_text, make_history_node, make_monochrome_palette, make_monochrome_pattern, make_opaque, make_or_update_undoable, make_stripe_pattern, meld_selection_into_canvas,
+	meld_textbox_into_canvas, open_from_file, open_from_image_info, paste, paste_image_from_file, please_enter_a_number, read_image_file, redo, render_canvas_view, render_history_as_gif, reset_canvas_and_history, reset_file, reset_selected_colors, resize_canvas_and_save_dimensions, resize_canvas_without_saving_dimensions, restore_history_state, sanity_check_blob, save_as_prompt, save_selection_to_file, select_all, select_tool, select_tools, selection_free_transform, set_all_url_params, set_magnification, show_about_paint, show_convert_to_black_and_white, show_custom_zoom_window, show_document_history, show_error_message, show_file_format_errors, show_multi_user_setup_dialog, show_news, show_resource_load_error_message, switch_to_polychrome_palette, toggle_grid,
+	toggle_thumbnail, try_exec_command, undo, undoable, undoable_option_change, update_canvas_rect, update_css_classes_for_conditional_messages, update_disable_aa, update_from_saved_file, update_helper_layer,
 	update_helper_layer_immediately, update_magnified_canvas_size, update_title, view_bitmap, write_image_file
 };
 // Temporary globals until all dependent code is converted to ES Modules

@@ -21,6 +21,7 @@ declare const FontDetective: any;
 declare const AnyPalette: any;
 declare const ImageTracer: any;
 declare const TrackyMouse: any;
+declare const agPsd: any;
 
 // Globals from scripts that are not converted to ESM yet,
 // and thus can't be imported. (I've been marking scripts as @ts-check as I convert them.)
@@ -117,6 +118,8 @@ declare interface I$ToolBox {
 declare interface I$ColorBox {
 	rebuild_palette(): void;
 }
+// $LayersBox.js
+declare const $layersbox: JQuery<HTMLDivElement> & I$Component;
 
 // $Component.js
 interface I$Component {
@@ -190,7 +193,7 @@ declare function make_monochrome_palette(rgba1?: number[], rgba2?: number[]): (s
  * @param {HTMLImageElement |HTMLCanvasElement | null=} options.icon - a visual representation of the operation type, shown in the history window, e.g. get_help_folder_icon("p_blank.png")
  * @returns {HistoryNode}
  */
-declare function make_history_node({ parent, futures, timestamp, soft, image_data, selection_image_data, selection_x, selection_y, textbox_text, textbox_x, textbox_y, textbox_width, textbox_height, text_tool_font, tool_transparent_mode, foreground_color, background_color, ternary_color, name, icon, }: {
+declare function make_history_node({ parent, futures, timestamp, soft, image_data, selection_image_data, selection_x, selection_y, selection_layer_slices, textbox_text, textbox_x, textbox_y, textbox_width, textbox_height, text_tool_font, tool_transparent_mode, foreground_color, background_color, ternary_color, name, icon, }: {
 	parent?: (HistoryNode | null) | undefined;
 	futures?: HistoryNode[] | undefined;
 	timestamp?: number | undefined;
@@ -199,6 +202,7 @@ declare function make_history_node({ parent, futures, timestamp, soft, image_dat
 	selection_image_data?: (ImageData | null) | undefined;
 	selection_x?: number | undefined;
 	selection_y?: number | undefined;
+	selection_layer_slices?: { layerId: string, image_data: ImageData }[] | null | undefined;
 	textbox_text?: string | undefined;
 	textbox_x?: number | undefined;
 	textbox_y?: number | undefined;
@@ -261,6 +265,7 @@ declare const $colorbox: JQuery<HTMLDivElement> & I$Component & I$ColorBox;
 declare const $status_area: JQuery<HTMLDivElement>;
 declare const $status_position: JQuery<HTMLDivElement>;
 declare const $status_size: JQuery<HTMLDivElement>;
+declare const $status_zoom: JQuery<HTMLDivElement>;
 declare const $status_text: JQuery<HTMLDivElement> & { default: () => void };
 declare const $toolbox: JQuery<HTMLDivElement> & I$Component & I$ToolBox;
 declare const canvas_handles: Handles;
@@ -314,7 +319,7 @@ interface Window {
 	 * @param {HTMLImageElement |HTMLCanvasElement | null=} options.icon - a visual representation of the operation type, shown in the history window, e.g. get_help_folder_icon("p_blank.png")
 	 * @returns {HistoryNode}
 	 */
-	make_history_node({ parent, futures, timestamp, soft, image_data, selection_image_data, selection_x, selection_y, textbox_text, textbox_x, textbox_y, textbox_width, textbox_height, text_tool_font, tool_transparent_mode, foreground_color, background_color, ternary_color, name, icon, }: {
+	make_history_node({ parent, futures, timestamp, soft, image_data, selection_image_data, selection_x, selection_y, selection_layer_slices, textbox_text, textbox_x, textbox_y, textbox_width, textbox_height, text_tool_font, tool_transparent_mode, foreground_color, background_color, ternary_color, name, icon, }: {
 		parent?: (HistoryNode | null) | undefined;
 		futures?: HistoryNode[] | undefined;
 		timestamp?: number | undefined;
@@ -323,6 +328,7 @@ interface Window {
 		selection_image_data?: (ImageData | null) | undefined;
 		selection_x?: number | undefined;
 		selection_y?: number | undefined;
+		selection_layer_slices?: { layerId: string, image_data: ImageData }[] | null | undefined;
 		textbox_text?: string | undefined;
 		textbox_x?: number | undefined;
 		textbox_y?: number | undefined;
@@ -338,6 +344,7 @@ interface Window {
 	}): HistoryNode;
 	exit_fullscreen_if_ios: () => void;
 	show_about_paint: () => void;
+	flush_current_session?: () => Promise<void>;
 	/**
 	 * @param {Blob} blob
 	 * @param {() => void} okay_callback
@@ -378,9 +385,11 @@ interface Window {
 	$canvas_area: JQuery<HTMLDivElement>;
 	$canvas: JQuery<HTMLCanvasElement>;
 	$colorbox: JQuery<HTMLDivElement> & I$Component & I$ColorBox;
+	$layersbox: JQuery<HTMLDivElement> & I$Component;
 	$status_area: JQuery<HTMLDivElement>;
 	$status_position: JQuery<HTMLDivElement>;
 	$status_size: JQuery<HTMLDivElement>;
+	$status_zoom: JQuery<HTMLDivElement>;
 	$status_text: JQuery<HTMLDivElement> & { default: () => void };
 	$toolbox: JQuery<HTMLDivElement> & I$Component & I$ToolBox;
 	canvas_handles: Handles;
@@ -473,6 +482,7 @@ interface Window {
 	setDocumentEdited?: (edited: boolean) => void;
 	setRepresentedFilename?: (filename: string) => void;
 	setMenus?: (menus: any) => void; // TODO: types for OS-GUI.js menus
+	setCapturedShortcuts?: (accelerators: { key: string, mod: boolean, alt: boolean, shift: boolean }[]) => void;
 	// OS-GUI's MenuBar.js
 	MenuBar: typeof MenuBar;
 	// Youtube API, used by vaporwave-fun.js, missing from @types/youtube
@@ -487,6 +497,8 @@ interface Window {
 interface OSGUIMenuItem {
 	speech_recognition?: string[];
 	emoji_icon?: string;
+	shortcut_id?: string;
+	defaultShortcut?: string;
 }
 
 // The JS Paint `systemHooks` API
@@ -550,14 +562,19 @@ declare class OnCanvasHelperLayer extends OnCanvasObject {
 declare class OnCanvasSelection extends OnCanvasObject {
 	constructor(x: number, y: number, width: number, height: number, image_source?: HTMLImageElement | HTMLCanvasElement | ImageData);
 	instantiate(image_source: HTMLImageElement | HTMLCanvasElement | ImageData): void;
-	cut_out_background(): void;
+	cut_out_background(options?: { all_layers?: boolean }): void;
 	update_tool_transparent_mode(): void;
-	replace_source_canvas(new_source_canvas: PixelCanvas): void;
+	get_layer_slice_data(): { layerId: string, image_data: ImageData }[] | null;
+	set_layer_slice_data(slices: { layerId: string, image_data: ImageData }[] | null | undefined): void;
+	replace_source_canvas(new_source_canvas: PixelCanvas, new_slice_canvases?: PixelCanvas[]): void;
 	resize(): void;
 	scale(factor: number): void;
 	draw(): void;
+	enable_free_transform(): void;
+	set_rotate_modifier(on: boolean): void;
 	canvas: PixelCanvas;
 	source_canvas: PixelCanvas;
+	layer_slices: { layerId: string, canvas: PixelCanvas }[];
 	dragging: boolean;
 }
 declare class OnCanvasTextBox extends OnCanvasObject {
@@ -666,6 +683,7 @@ type ToolID =
 	"TOOL_PENCIL" |
 	"TOOL_BRUSH" |
 	"TOOL_AIRBRUSH" |
+	"TOOL_MAGIC_WAND" |
 	"TOOL_TEXT" |
 	"TOOL_LINE" |
 	"TOOL_CURVE" |
@@ -776,6 +794,16 @@ interface Tool {
 	$button?: JQuery<HTMLElement>,
 }
 
+/** The tool size settings tracked by the undo history, alongside the selected colors. */
+interface ToolSizes {
+	brush_shape?: BrushShape;
+	brush_size?: number;
+	stroke_size?: number;
+	eraser_size?: number;
+	airbrush_size?: number;
+	pencil_size?: number;
+}
+
 interface HistoryNode {
 	/** the state before this state (its basis), or null if this is the first state */
 	parent: HistoryNode | null;
@@ -787,12 +815,18 @@ interface HistoryNode {
 	soft: boolean;
 	/** the image data for the canvas (TODO: region updates) */
 	image_data: ImageData | null;
+	/** complete raster layer stack for this document state */
+	layers?: LayerSnapshot[];
+	/** active layer for this document state */
+	active_layer_id?: string;
 	/** the image data for the selection, if any */
 	selection_image_data: ImageData | null;
 	/** the x position of the selection, if any */
 	selection_x: number;
 	/** the y position of the selection, if any */
 	selection_y: number;
+	/** per-layer pixels for an all-layers selection, if any */
+	selection_layer_slices?: { layerId: string, image_data: ImageData }[] | null;
 	/** the text in the textbox, if any */
 	textbox_text: string;
 	/** the x position of the textbox, if any */
@@ -813,6 +847,8 @@ interface HistoryNode {
 	background_color: string | CanvasPattern;
 	/** selected ternary color (ctrl+click) */
 	ternary_color: string | CanvasPattern;
+	/** brush/line/eraser/airbrush/pencil sizes and brush shape */
+	tool_sizes?: ToolSizes;
 	/** the name of the operation, shown in the history window, e.g. localize("Resize Canvas") */
 	name: string;
 	/** a visual representation of the operation type, shown in the history window, e.g. get_help_folder_icon("p_blank.png") */
@@ -843,6 +879,25 @@ interface PixelContext extends CanvasRenderingContext2D {
 	enable_image_smoothing(): void;
 	copy(image: HTMLImageElement | HTMLCanvasElement | ImageData): void;
 	canvas: PixelCanvas;
+}
+
+interface PaintLayer {
+	id: string;
+	name: string;
+	canvas: PixelCanvas;
+	ctx: PixelContext;
+	visible: boolean;
+	opacity: number;
+	locked: boolean;
+}
+
+interface LayerSnapshot {
+	id: string;
+	name: string;
+	visible: boolean;
+	opacity: number;
+	locked?: boolean;
+	image_data: ImageData;
 }
 
 type BrushShape = "circle" | "square" | "reverse_diagonal" | "diagonal";

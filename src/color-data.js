@@ -33,6 +33,78 @@ const default_palette = [
 	"rgb(255,0,128)", //
 	"rgb(255,128,64)", //
 ];
+
+/**
+ * Convert HSL (hue in degrees, s/l in percent) to an rgb() string.
+ * @param {number} h
+ * @param {number} s
+ * @param {number} l
+ * @returns {string}
+ */
+function hsl_to_rgb_string(h, s, l) {
+	s /= 100;
+	l /= 100;
+	const a = s * Math.min(l, 1 - l);
+	const f = (n) => {
+		const k = (n + h / 30) % 12;
+		return Math.round(255 * (l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)));
+	};
+	return `rgb(${f(0)},${f(8)},${f(4)})`;
+}
+
+/** Extra top row uses this absolute HSL lightness. */
+const KP_LUM_DARKEST = 12;
+/** Palette chip that paints as a hole (UI shows a checkerboard). */
+const KP_TRANSPARENT = "rgba(0,0,0,0)";
+
+/**
+ * Chromatic columns: 12% / 25% / 50% / 75% luminance, fully saturated except skin.
+ * @type {{ h: number, s: number, lTop: number, lMid: number, lLight: number }[]}
+ */
+const kp_columns = [
+	{ h: 0, s: 100, lTop: 25, lMid: 50, lLight: 75 },   // red
+	{ h: 20, s: 100, lTop: 25, lMid: 50, lLight: 75 },  // peach
+	{ h: 30, s: 100, lTop: 25, lMid: 50, lLight: 75 },  // orange (dark half reads as brown)
+	{ h: 60, s: 100, lTop: 25, lMid: 50, lLight: 75 },  // yellow
+	{ h: 120, s: 100, lTop: 25, lMid: 50, lLight: 75 }, // green
+	{ h: 180, s: 100, lTop: 25, lMid: 50, lLight: 75 }, // cyan
+	{ h: 210, s: 100, lTop: 25, lMid: 50, lLight: 75 }, // azure
+	{ h: 240, s: 100, lTop: 25, lMid: 50, lLight: 75 }, // blue
+	{ h: 270, s: 100, lTop: 25, lMid: 50, lLight: 75 }, // violet
+	{ h: 300, s: 100, lTop: 25, lMid: 50, lLight: 75 }, // magenta
+	{ h: 330, s: 100, lTop: 25, lMid: 50, lLight: 75 }, // pink
+	{ h: 24, s: 52, lTop: 56, lMid: 70, lLight: 84 },   // peach skin
+];
+/**
+ * @param {{ h: number, s: number, lTop: number, lMid: number, lLight: number }} col
+ * @param {"above" | "top" | "mid" | "light"} which
+ * @returns {string}
+ */
+function kp_column_color(col, which) {
+	const l = which === "above" ? KP_LUM_DARKEST :
+		which === "top" ? col.lTop :
+			which === "mid" ? col.lMid :
+				col.lLight;
+	return hsl_to_rgb_string(col.h, col.s, l);
+}
+
+/** @type {(string | CanvasPattern)[] & { rows?: number }} */
+const kp_color_palette = [
+	"rgb(0,0,0)", // Black
+	hsl_to_rgb_string(0, 0, 75), // Gray 75%
+	...kp_columns.map((col) => kp_column_color(col, "above")),
+	hsl_to_rgb_string(0, 0, 10), // Gray 10%
+	hsl_to_rgb_string(0, 0, 88), // Gray 88%
+	...kp_columns.map((col) => kp_column_color(col, "top")),
+	hsl_to_rgb_string(0, 0, 25), // Gray 25%
+	"rgb(255,255,255)", // White
+	...kp_columns.map((col) => kp_column_color(col, "mid")),
+	hsl_to_rgb_string(0, 0, 50), // Gray 50%
+	KP_TRANSPARENT, // Transparent
+	...kp_columns.map((col) => kp_column_color(col, "light")),
+];
+kp_color_palette.rows = 4;
+
 const monochrome_palette_as_colors = [
 	"rgb(0,0,0)",
 	"rgb(9,9,9)",
@@ -182,9 +254,35 @@ const get_winter_palette = () => {
 	];
 };
 
+/**
+ * @param {string} id
+ * @returns {(string | CanvasPattern)[]}
+ */
+function get_named_palette(id) {
+	if (id === "kp") {
+		return kp_color_palette;
+	}
+	if (id === "winter") {
+		return get_winter_palette();
+	}
+	return default_palette;
+}
+
+/**
+ * @param {(string | CanvasPattern)[] & { rows?: number }} source
+ * @returns {(string | CanvasPattern)[] & { rows?: number }}
+ */
+function copy_palette(source) {
+	const next = /** @type {(string | CanvasPattern)[] & { rows?: number }} */ (source.slice());
+	if (source.rows) {
+		next.rows = source.rows;
+	}
+	return next;
+}
 
 export {
-	basic_colors, custom_colors, default_palette, get_winter_palette, monochrome_palette_as_colors
+	basic_colors, copy_palette, custom_colors, default_palette, get_named_palette, get_winter_palette, kp_color_palette, monochrome_palette_as_colors
 };
 // Temporary globals until all dependent code is converted to ES Modules
 window.default_palette = default_palette; // used by app-state.js
+window.kp_color_palette = kp_color_palette;

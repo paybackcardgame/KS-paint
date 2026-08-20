@@ -166,6 +166,19 @@ const get_rgba_from_color_implementation = (color) => {
 const get_rgba_from_color = memoize_synchronous_function(get_rgba_from_color_implementation);
 
 /**
+ * True for a solid color with alpha 0 (the KP “transparent” palette chip).
+ * Patterns are never treated as fully transparent.
+ * @param {string | CanvasPattern | CanvasGradient} color
+ * @returns {boolean}
+ */
+function is_fully_transparent_swatch(color) {
+	if (typeof color !== "string" || !color) {
+		return false;
+	}
+	return get_rgba_from_color(color)[3] === 0;
+}
+
+/**
  * Compare two ImageData.
  * Note: putImageData is lossy, due to premultiplied alpha.
  * @param {ImageData} a
@@ -209,7 +222,10 @@ function make_canvas(width, height) {
 
 
 	const new_canvas = /** @type {PixelCanvas} */ (E("canvas"));
-	const new_ctx = /** @type {PixelContext} */ (new_canvas.getContext("2d"));
+	const new_ctx = /** @type {PixelContext} */ (
+		new_canvas.getContext("2d", { willReadFrequently: true }) ||
+		new_canvas.getContext("2d")
+	);
 
 	new_canvas.ctx = new_ctx;
 
@@ -269,6 +285,33 @@ function make_canvas(width, height) {
 	}
 
 	return new_canvas;
+}
+
+/**
+ * Whether we're on an Apple platform, where the Ctrl-based shortcuts are
+ * pressed (and conventionally labeled) with Command instead.
+ * @type {boolean}
+ */
+const is_apple_platform = /(Mac|iPhone|iPod|iPad)/i.test(
+	// @ts-ignore (userAgentData isn't in all lib.dom versions; it reports "macOS" where `platform` reports "MacIntel")
+	navigator.userAgentData?.platform || navigator.platform || ""
+);
+
+/** What to call the Ctrl key in shortcut labels shown to the user. */
+const MOD_KEY_LABEL = is_apple_platform ? "Cmd" : "Ctrl";
+
+/**
+ * Converts a shortcut label from the canonical form the app stores and matches
+ * against ("Ctrl+Shift+S") to the form shown to the user, which says Cmd on Mac.
+ * The app accepts either key for these shortcuts, so this is purely presentation.
+ * @param {string} shortcut_label
+ * @returns {string}
+ */
+function display_shortcut_label(shortcut_label) {
+	if (!shortcut_label) {
+		return shortcut_label;
+	}
+	return shortcut_label.replace(/\bCtrl\b/g, MOD_KEY_LABEL);
 }
 
 /**
@@ -450,8 +493,10 @@ function supports_vertical_writing_mode() {
 export {
 	$G,
 	E,
+	MOD_KEY_LABEL,
 	TAU,
 	debounce,
+	display_shortcut_label,
 	from_canvas_coords,
 	get_file_extension,
 	get_format_from_extension,
@@ -460,6 +505,8 @@ export {
 	get_icon_for_tools,
 	get_rgba_from_color,
 	image_data_match,
+	is_apple_platform,
+	is_fully_transparent_swatch,
 	is_pride_month,
 	load_image_simple,
 	make_canvas,

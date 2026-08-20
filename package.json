@@ -80,6 +80,7 @@
     "jspaint": "jspaint-bin.js"
   },
   "dependencies": {
+    "ag-psd": "^31.0.2",
     "argparse": "^2.0.1",
     "electron-squirrel-startup": "^1.0.0",
     "lookpath": "^1.2.2",
@@ -151,5 +152,8 @@
   "bugs": {
     "url": "https://github.com/1j01/jspaint/issues",
     "email": "isaiahodhner@gmail.com"
+  },
+  "allowScripts": {
+    "electron@20.3.12": true
   }
 }

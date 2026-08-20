@@ -1,11 +1,13 @@
 // @ts-check
 // eslint-disable-next-line no-unused-vars
 /* global file_name:writable */
-/* global $app, $canvas_area, localize, magnification, main_canvas, main_ctx, redos, undos */
-import { $DialogWindow } from "./$ToolWindow.js";
+/* global $app, $canvas_area, current_history_node, localize, magnification, main_canvas, main_ctx, layers, redos, root_history_node, undos */
 // import { localize } from "./app-localization.js";
-import { change_url_param, get_uris, load_image_from_uri, open_from_image_info, redo, reset_file, show_error_message, show_resource_load_error_message, undo, undoable, update_title } from "./functions.js";
+import { cancel_pending_default_template } from "./document-template.js";
+import { change_url_param, get_uris, load_image_from_uri, make_history_node, open_from_image_info, reset_file, restore_history_state, show_error_message, show_resource_load_error_message, undoable, update_title } from "./functions.js";
 import { $G, debounce, get_help_folder_icon, image_data_match, is_discord_embed, make_canvas, to_canvas_coords } from "./helpers.js";
+import { deserialize_document_history, load_document_history, save_document_history, serialize_document_history } from "./history-persistence.js";
+import { deserialize_layers_document, initialize_layer_stack, initialize_layer_stack_from_layers, select_layer, serialize_layers_document } from "./layers.js";
 import { storage_quota_exceeded } from "./manage-storage.js";
 import { showMessageBox } from "./msgbox.js";
 import { localStore } from "./storage.js";
@@ -21,107 +23,31 @@ try {
 	delete localStorage._available;
 } catch (_error) { /* ignore */ }
 
-// @TODO: keep other data in addition to the image data
-// such as the file_name and other state
-// (maybe even whether it's considered saved? idk about that)
-// I could have the image in one storage slot and the state in another
-
-const match_threshold = 1; // 1 is just enough for a workaround for Brave browser's farbling: https://github.com/1j01/jspaint/issues/184
-const canvas_has_any_apparent_image_data = () =>
-	main_canvas.ctx.getImageData(0, 0, main_canvas.width, main_canvas.height).data.some((v) => v > match_threshold);
-
-let $recovery_window;
-function show_recovery_window(no_longer_blank) {
-	$recovery_window?.close();
-	const $w = $recovery_window = $DialogWindow();
-	$w.on("close", () => {
-		$recovery_window = null;
-	});
-	$w.title("Recover Document");
-	let backup_impossible = false;
-	try { window.localStorage.getItem("bogus test key"); } catch (_error) { backup_impossible = true; }
-	// TODO: get rid of this invasive dialog https://github.com/1j01/jspaint/issues/325
-	// It appears when it shouldn't, in basic scenarios like Ctrl+A in a transparent document,
-	// and it gets bigger once you edit the document, which feels... almost aggressive.
-	// That said, I've made it more compact and delineated the expanded section with a horizontal rule,
-	// so it doesn't feel as much like it's changed out from under you and you have to re-read it.
-	$w.$main.append($(`
-		<p>Woah! The canvas became empty.</p>
-		<p>If this was on purpose, please ignore this message.</p>
-		<p>
-			If the canvas was cleared due to memory usage,<br>
-			click Undo to recover the document.
-		</p>
-		<!--<p>Remember to save with <b>File > Save</b>!</p>-->
-		${backup_impossible ?
-			"<p><b>Note:</b> No automatic backup is possible unless you enable Cookies in your browser.</p>" :
-			(
-				no_longer_blank ?
-					`<hr>
-					<p style="opacity: 0.8; font-size: 0.9em;">
-						Auto-save is paused while this dialog is open.
-					</p>
-					<p style="opacity: 0.8; font-size: 0.9em;">
-						(See <b>File &gt; Manage Storage</b> to view backups.)
-					</p>` :
-					""
-			)
-		}
-	`));
-
-	const $undo = $w.$Button("Undo", () => {
-		undo();
-	});
-	const $redo = $w.$Button("Redo", () => {
-		redo();
-	});
-	const update_buttons_disabled = () => {
-		$undo.prop("disabled", undos.length < 1);
-		$redo.prop("disabled", redos.length < 1);
-	};
-	$G.on("session-update.session-hook", update_buttons_disabled);
-	update_buttons_disabled();
-
-	$w.$Button(localize("Close"), () => {
-		$w.close();
-	});
-	$w.center();
-
-	$w.find("button:enabled").focus();
-}
-
-let last_undos_length = undos.length;
-function handle_data_loss() {
-	const window_is_open = $recovery_window && !$recovery_window.closed;
-	let save_paused = false;
-	if (!canvas_has_any_apparent_image_data()) {
-		if (!window_is_open) {
-			show_recovery_window();
-		}
-		save_paused = true;
-	} else if (window_is_open) {
-		if (undos.length > last_undos_length) {
-			show_recovery_window(true);
-		}
-		save_paused = true;
-	}
-	last_undos_length = undos.length;
-	return save_paused;
-}
+// Document pixels stay in localStorage; undo/redo history is stored in IndexedDB
+// because a full history tree is far too large for localStorage.
 
 class LocalSession {
 	constructor(session_id) {
 		this.id = session_id;
 		const ls_key = `image#${session_id}`;
 		log(`Local storage key: ${ls_key}`);
+		this._ended = false;
+		this._ready_to_save_history = false;
 		// save image to storage
 		this.save_image_to_storage_immediately = () => {
-			const save_paused = handle_data_loss();
-			if (save_paused) {
+			log(`Saving image to storage: ${ls_key}`);
+			let payload;
+			try {
+				if (layers?.length > 1) {
+					payload = JSON.stringify(serialize_layers_document());
+				} else {
+					payload = main_canvas.toDataURL("image/png");
+				}
+			} catch (error) {
+				show_error_message("Failed to serialize the document for local backup.", error);
 				return;
 			}
-			log(`Saving image to storage: ${ls_key}`);
-			localStore.set(ls_key, main_canvas.toDataURL("image/png"), (err) => {
+			localStore.set(ls_key, payload, (err) => {
 				if (err) {
 					// @ts-ignore (quotaExceeded is added by storage.js)
 					if (err.quotaExceeded) {
@@ -135,8 +61,70 @@ class LocalSession {
 			});
 		};
 		this.save_image_to_storage_soon = debounce(this.save_image_to_storage_immediately, 100);
+		this.save_history_to_storage_immediately = () => {
+			if (this._ended || !this._ready_to_save_history) {
+				return Promise.resolve();
+			}
+			try {
+				const payload = serialize_document_history({
+					root: root_history_node,
+					current: current_history_node,
+					undos,
+					redos,
+				});
+				this._history_save_promise = save_document_history(this.id, payload).catch((error) => {
+					log("Failed to save document history:", error);
+				});
+				return this._history_save_promise;
+			} catch (error) {
+				log("Failed to serialize document history:", error);
+				return Promise.resolve();
+			}
+		};
+		this.save_history_to_storage_soon = debounce(this.save_history_to_storage_immediately, 400);
+		this.restore_history_from_storage = async () => {
+			if (this._ended || current_session !== this) {
+				return;
+			}
+			try {
+				if (undos.length > 0 || (current_history_node.futures && current_history_node.futures.length > 0)) {
+					log("Skipping history restore because the document was edited while loading");
+					return;
+				}
+				const payload = await load_document_history(this.id);
+				if (this._ended || current_session !== this || !payload) {
+					return;
+				}
+				if (undos.length > 0 || (current_history_node.futures && current_history_node.futures.length > 0)) {
+					log("Skipping history restore because the document was edited while loading");
+					return;
+				}
+				const snapshot = deserialize_document_history(payload, make_history_node);
+				if (!snapshot) {
+					return;
+				}
+				restore_history_state(snapshot);
+				log(`Restored document history for session ${this.id} (${snapshot.undos.length} undo steps)`);
+			} catch (error) {
+				log("Failed to restore document history:", error);
+			} finally {
+				if (!this._ended && current_session === this) {
+					this._ready_to_save_history = true;
+				}
+			}
+		};
+		this.flush = async () => {
+			this.save_image_to_storage_soon.cancel();
+			this.save_history_to_storage_soon.cancel();
+			this.save_image_to_storage_immediately();
+			await this.save_history_to_storage_immediately();
+		};
 		localStore.get(ls_key, (err, uri) => {
+			if (this._ended || current_session !== this) {
+				return;
+			}
 			if (err) {
+				this._ready_to_save_history = true;
 				if (localStorageAvailable) {
 					show_error_message("Failed to retrieve image from local storage.", err);
 				} else {
@@ -146,24 +134,72 @@ class LocalSession {
 					});
 				}
 			} else if (uri) {
-				load_image_from_uri(uri).then((info) => {
-					open_from_image_info(info, null, null, true, true);
-				}, (error) => {
-					show_error_message("Failed to open image from local storage.", error);
-				});
+				cancel_pending_default_template();
+				if (typeof uri === "string" && uri.trim().startsWith("{")) {
+					try {
+						const document_json = JSON.parse(uri);
+						deserialize_layers_document(document_json).then((loaded_layers) => {
+							if (this._ended || current_session !== this) {
+								return;
+							}
+							initialize_layer_stack_from_layers(loaded_layers);
+							if (document_json.active_layer_id) {
+								select_layer(document_json.active_layer_id);
+							}
+							$canvas_area.trigger("resize");
+							this.restore_history_from_storage();
+						}, (error) => {
+							if (this._ended || current_session !== this) {
+								return;
+							}
+							this._ready_to_save_history = true;
+							show_error_message("Failed to open layered image from local storage.", error);
+						});
+					} catch (error) {
+						this._ready_to_save_history = true;
+						show_error_message("Failed to open layered image from local storage.", error);
+					}
+				} else {
+					load_image_from_uri(uri).then((info) => {
+						if (this._ended || current_session !== this) {
+							return;
+						}
+						open_from_image_info(info, () => {
+							this.restore_history_from_storage();
+						}, () => {
+							this._ready_to_save_history = true;
+						}, true, true);
+					}, (error) => {
+						if (this._ended || current_session !== this) {
+							return;
+						}
+						this._ready_to_save_history = true;
+						show_error_message("Failed to open image from local storage.", error);
+					});
+				}
 			} else {
-				// no uri so lets save the blank canvas
-				this.save_image_to_storage_soon();
+				// Empty session: stay blank. File > New / first-open apply the default
+				// template themselves. Applying it here races File > Open and overwrites
+				// the file after it appears.
+				this._ready_to_save_history = true;
 			}
 		});
 		$G.on("session-update.session-hook", () => {
 			this.save_image_to_storage_soon();
+			this.save_history_to_storage_soon();
+		});
+		$G.on("history-update.session-hook", () => {
+			this.save_history_to_storage_soon();
 		});
 	}
 	end() {
-		// Skip debounce and save immediately
+		// Skip debounce and save immediately before marking ended,
+		// otherwise the history save bails out.
 		this.save_image_to_storage_soon.cancel();
+		this.save_history_to_storage_soon.cancel();
 		this.save_image_to_storage_immediately();
+		this.save_history_to_storage_immediately();
+		this._ended = true;
 		// Remove session-related hooks
 		$G.off(".session-hook");
 	}
@@ -350,10 +386,6 @@ class FirebaseSession {
 		let previous_uri;
 		// let pointer_operations = []; // the multiplayer syncing stuff is a can of worms, so this is disabled
 		this.write_canvas_to_database_immediately = () => {
-			const save_paused = handle_data_loss();
-			if (save_paused) {
-				return;
-			}
 			// Sync the data from this client to the server (one-way)
 			const uri = main_canvas.toDataURL();
 			if (previous_uri !== uri) {
@@ -404,7 +436,7 @@ class FirebaseSession {
 							icon: get_help_folder_icon("p_database.png"),
 						}, () => {
 							// Write the image data to the canvas
-							main_ctx.copy(img);
+							initialize_layer_stack(img);
 							$canvas_area.trigger("resize");
 						});
 						ignore_session_update = false;
@@ -783,10 +815,6 @@ class RESTSession {
 		this._last_write_time = -1;
 	}
 	async _write_canvas_to_server_immediately() {
-		const save_paused = handle_data_loss();
-		if (save_paused) {
-			return;
-		}
 		// Sync the data from this client to the server (one-way)
 		const uri = main_canvas.toDataURL();
 		if (this._previous_uri !== uri) {
@@ -875,7 +903,7 @@ class RESTSession {
 						icon: get_help_folder_icon("p_database.png"),
 					}, () => {
 						// Write the image data to the canvas
-						main_ctx.copy(img);
+						initialize_layer_stack(img);
 						$canvas_area.trigger("resize");
 					});
 					this._ignore_session_update = false;
@@ -1004,6 +1032,18 @@ const new_local_session = () => {
 	change_url_param("local", generate_session_id());
 };
 
+const flush_current_session = async () => {
+	if (current_session && typeof current_session.flush === "function") {
+		await current_session.flush();
+	}
+};
+
+window.addEventListener("pagehide", () => {
+	flush_current_session();
+});
+
+window.flush_current_session = flush_current_session;
+
 // @TODO: Session GUI
 // @TODO: Indicate when the session ID is invalid
 // @TODO: Indicate when the session switches
@@ -1054,7 +1094,7 @@ if (is_discord_embed) {
 // 	console.log("Updated participants:", participants);
 // }
 
-export { new_local_session };
+export { new_local_session, flush_current_session };
 // Temporary globals until all dependent code is converted to ES Modules
 window.new_local_session = new_local_session; // used by functions.js
 

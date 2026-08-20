@@ -1,12 +1,66 @@
 // @ts-check
 // eslint-disable-next-line no-unused-vars
 /* global saved:writable, brush_size:writable, pencil_size:writable, stroke_size:writable */
-/* global $canvas_area, aliasing, localize, main_canvas, main_ctx, palette, selected_colors, selection, stroke_color, transparency */
+/* global $canvas_area, aliasing, layers, localize, main_canvas, main_ctx, palette, selected_colors, selection, stroke_color, transparency */
 // import { localize } from "./app-localization.js";
 import { cancel, deselect, detect_monochrome, show_error_message, undoable, update_title } from "./functions.js";
-import { $G, TAU, get_help_folder_icon, get_rgba_from_color, make_canvas, memoize_synchronous_function } from "./helpers.js";
+import { flood_fill_from_source, replace_matching_from_source } from "./flood-fill-core.js";
+import { $G, TAU, get_help_folder_icon, get_rgba_from_color, is_fully_transparent_swatch, make_canvas, memoize_synchronous_function } from "./helpers.js";
+import { composite_layers, mark_all_layers_dirty } from "./layers.js";
+import { set_repeatable_action } from "./repeat-action.js";
 
-const fill_threshold = 1; // 1 is just enough for a workaround for Brave browser's farbling: https://github.com/1j01/jspaint/issues/184
+// 1 is just enough for a workaround for Brave browser's farbling: https://github.com/1j01/jspaint/issues/184
+// Higher values are a user-configurable fill tolerance (speedrun / anti-alias friendly).
+let fill_threshold = 1;
+
+/**
+ * @param {number} value
+ */
+function set_fill_threshold(value) {
+	fill_threshold = Math.max(0, Math.min(255, Math.round(value)));
+	$G.trigger("option-changed");
+	$G.triggerHandler("fill-threshold-change", [fill_threshold]);
+}
+
+/**
+ * @returns {number}
+ */
+function get_fill_threshold() {
+	return fill_threshold;
+}
+
+let wand_threshold = 1;
+
+/**
+ * @param {number} value
+ */
+function set_wand_threshold(value) {
+	wand_threshold = Math.max(0, Math.min(255, Math.round(value)));
+	$G.trigger("option-changed");
+	$G.triggerHandler("wand-threshold-change", [wand_threshold]);
+}
+
+/**
+ * @returns {number}
+ */
+function get_wand_threshold() {
+	return wand_threshold;
+}
+
+/**
+ * Run a color-match operation with a temporary fill threshold, without updating the Fill slider.
+ * @param {number} threshold
+ * @param {() => void} fn
+ */
+function with_color_threshold(threshold, fn) {
+	const saved = fill_threshold;
+	fill_threshold = Math.max(0, Math.min(255, Math.round(threshold)));
+	try {
+		fn();
+	} finally {
+		fill_threshold = saved;
+	}
+}
 
 /**
  * Calculates the canvas size required for a brush based on the brush size and shape.
@@ -528,94 +582,54 @@ function draw_fill_separately(source_ctx, dest_ctx, start_x, start_y, fill_r, fi
 	if (fill_a === 0) {
 		throw new Error("Filling with alpha of zero is not supported. Zero alpha is used for detecting whether a pixel has been visited.");
 	}
-	const c_width = main_canvas.width;
-	const c_height = main_canvas.height;
-	start_x = Math.max(0, Math.min(Math.floor(start_x), c_width));
-	start_y = Math.max(0, Math.min(Math.floor(start_y), c_height));
-	const stack = [[start_x, start_y]];
+	const c_width = source_ctx.canvas.width;
+	const c_height = source_ctx.canvas.height;
 	const source_id = source_ctx.getImageData(0, 0, c_width, c_height);
-	const dest_id = dest_ctx.getImageData(0, 0, c_width, c_height);
-	let pixel_pos = (start_y * c_width + start_x) * 4;
-	const start_r = source_id.data[pixel_pos + 0];
-	const start_g = source_id.data[pixel_pos + 1];
-	const start_b = source_id.data[pixel_pos + 2];
-	const start_a = source_id.data[pixel_pos + 3];
-
-	while (stack.length) {
-		let new_pos;
-		let x;
-		let y;
-		let reach_left;
-		let reach_right;
-		new_pos = stack.pop();
-		x = new_pos[0];
-		y = new_pos[1];
-
-		pixel_pos = (y * c_width + x) * 4;
-		while (should_fill_at(pixel_pos)) {
-			y--;
-			pixel_pos = (y * c_width + x) * 4;
-		}
-		reach_left = false;
-		reach_right = false;
-
-		while (true) {
-			y++;
-			pixel_pos = (y * c_width + x) * 4;
-
-			if (!(y < c_height && should_fill_at(pixel_pos))) {
-				break;
-			}
-
-			do_fill_at(pixel_pos);
-
-			if (x > 0) {
-				if (should_fill_at(pixel_pos - 4)) {
-					if (!reach_left) {
-						stack.push([x - 1, y]);
-						reach_left = true;
-					}
-				} else if (reach_left) {
-					reach_left = false;
-				}
-			}
-
-			if (x < c_width - 1) {
-				if (should_fill_at(pixel_pos + 4)) {
-					if (!reach_right) {
-						stack.push([x + 1, y]);
-						reach_right = true;
-					}
-				} else if (reach_right) {
-					reach_right = false;
-				}
-			}
-
-			pixel_pos += c_width * 4;
-		}
-	}
+	// Blank buffer: dest is a mask, so skip getImageData (pixel copy) on the empty canvas.
+	const dest_id = source_ctx.createImageData(c_width, c_height);
+	flood_fill_from_source(source_id, dest_id, start_x, start_y, fill_r, fill_g, fill_b, fill_a, fill_threshold, { mode: "mask" });
 	dest_ctx.putImageData(dest_id, 0, 0);
+}
 
-	function should_fill_at(pixel_pos) {
-		return (
-			// not reached yet
-			dest_id.data[pixel_pos + 3] === 0 &&
-			// and matches start color (i.e. region to fill)
-			(
-				Math.abs(source_id.data[pixel_pos + 0] - start_r) <= fill_threshold &&
-				Math.abs(source_id.data[pixel_pos + 1] - start_g) <= fill_threshold &&
-				Math.abs(source_id.data[pixel_pos + 2] - start_b) <= fill_threshold &&
-				Math.abs(source_id.data[pixel_pos + 3] - start_a) <= fill_threshold
-			)
-		);
-	}
+/**
+ * Flood-fill using source for color matching, painting into dest (typically the active layer).
+ * Avoids a third full-size mask canvas, which was causing getImageData to run out of memory on large layered documents.
+ *
+ * @param {CanvasRenderingContext2D} source_ctx
+ * @param {CanvasRenderingContext2D} dest_ctx
+ * @param {number} start_x
+ * @param {number} start_y
+ * @param {number} fill_r
+ * @param {number} fill_g
+ * @param {number} fill_b
+ * @param {number} fill_a
+ */
+function draw_fill_from_source_into_dest(source_ctx, dest_ctx, start_x, start_y, fill_r, fill_g, fill_b, fill_a) {
+	const c_width = source_ctx.canvas.width;
+	const c_height = source_ctx.canvas.height;
+	const source_id = source_ctx.getImageData(0, 0, c_width, c_height);
+	const dest_id = dest_ctx.getImageData(0, 0, dest_ctx.canvas.width, dest_ctx.canvas.height);
+	flood_fill_from_source(source_id, dest_id, start_x, start_y, fill_r, fill_g, fill_b, fill_a, fill_threshold, { mode: "paint" });
+	dest_ctx.putImageData(dest_id, 0, 0);
+}
 
-	function do_fill_at(pixel_pos) {
-		dest_id.data[pixel_pos + 0] = fill_r;
-		dest_id.data[pixel_pos + 1] = fill_g;
-		dest_id.data[pixel_pos + 2] = fill_b;
-		dest_id.data[pixel_pos + 3] = fill_a;
-	}
+/**
+ * Global color replace using source for matching, painting into dest.
+ *
+ * @param {CanvasRenderingContext2D} source_ctx
+ * @param {CanvasRenderingContext2D} dest_ctx
+ * @param {number} x
+ * @param {number} y
+ * @param {number} fill_r
+ * @param {number} fill_g
+ * @param {number} fill_b
+ * @param {number} fill_a
+ */
+function draw_noncontiguous_fill_from_source_into_dest(source_ctx, dest_ctx, x, y, fill_r, fill_g, fill_b, fill_a) {
+	const source_id = source_ctx.getImageData(0, 0, source_ctx.canvas.width, source_ctx.canvas.height);
+	const dest_id = dest_ctx.getImageData(0, 0, dest_ctx.canvas.width, dest_ctx.canvas.height);
+	replace_matching_from_source(source_id, dest_id, x, y, fill_r, fill_g, fill_b, fill_a, fill_threshold);
+	dest_ctx.putImageData(dest_id, 0, 0);
 }
 
 /**
@@ -743,7 +757,7 @@ function draw_noncontiguous_fill_separately(source_ctx, dest_ctx, x, y) {
 	x = Math.max(0, Math.min(Math.floor(x), source_ctx.canvas.width));
 	y = Math.max(0, Math.min(Math.floor(y), source_ctx.canvas.height));
 	const source_image_data = source_ctx.getImageData(0, 0, source_ctx.canvas.width, source_ctx.canvas.height);
-	const dest_image_data = dest_ctx.getImageData(0, 0, dest_ctx.canvas.width, dest_ctx.canvas.height);
+	const dest_image_data = source_ctx.createImageData(source_ctx.canvas.width, source_ctx.canvas.height);
 	const start_index = (y * source_image_data.width + x) * 4;
 	const start_r = source_image_data.data[start_index + 0];
 	const start_g = source_image_data.data[start_index + 1];
@@ -764,22 +778,23 @@ function draw_noncontiguous_fill_separately(source_ctx, dest_ctx, x, y) {
  * @param {(original_canvas: PixelCanvas, original_ctx: PixelContext, new_canvas: PixelCanvas, new_ctx: PixelContext) => void} fn - The image transformation function to apply.
  */
 function apply_image_transformation(meta, fn) {
-	const original_canvas = selection ? selection.source_canvas : main_canvas;
-
-	const new_canvas = make_canvas(original_canvas.width, original_canvas.height);
-
-	const original_ctx = original_canvas.ctx;
-	const new_ctx = new_canvas.ctx;
-
-	fn(original_canvas, original_ctx, new_canvas, new_ctx);
+	set_repeatable_action(() => apply_image_transformation(meta, fn));
 
 	if (selection) {
+		const original_canvas = selection.source_canvas;
+		const new_canvas = make_canvas(original_canvas.width, original_canvas.height);
+		fn(original_canvas, original_canvas.ctx, new_canvas, new_canvas.ctx);
+		const new_slice_canvases = (selection.layer_slices || []).map((slice) => {
+			const next = make_canvas(slice.canvas.width, slice.canvas.height);
+			fn(slice.canvas, slice.canvas.ctx, next, next.ctx);
+			return next;
+		});
 		undoable({
 			name: `${meta.name} (${localize("Selection")})`,
 			icon: meta.icon,
 			soft: true,
 		}, () => {
-			selection.replace_source_canvas(new_canvas);
+			selection.replace_source_canvas(new_canvas, new_slice_canvases.length ? new_slice_canvases : undefined);
 		});
 	} else {
 		deselect();
@@ -790,8 +805,22 @@ function apply_image_transformation(meta, fn) {
 		}, () => {
 			saved = false;
 			update_title();
-
-			main_ctx.copy(new_canvas);
+			let transformed_width = main_canvas.width;
+			let transformed_height = main_canvas.height;
+			for (const layer of layers) {
+				const original_canvas = layer.canvas;
+				const new_canvas = make_canvas(original_canvas.width, original_canvas.height);
+				fn(original_canvas, original_canvas.ctx, new_canvas, new_canvas.ctx);
+				layer.canvas = new_canvas;
+				layer.ctx = new_canvas.ctx;
+				transformed_width = new_canvas.width;
+				transformed_height = new_canvas.height;
+			}
+			main_canvas.width = transformed_width;
+			main_canvas.height = transformed_height;
+			main_ctx.disable_image_smoothing();
+			mark_all_layers_dirty();
+			composite_layers();
 
 			// $canvas.trigger("update"); // update handles
 			$canvas_area.trigger("resize"); // update handles and magnified canvas size (CSS width/height)
@@ -1083,6 +1112,27 @@ function replace_colors_with_swatch(ctx, swatch, x_offset_from_global_canvas = 0
 	ctx.translate(-x_offset_from_global_canvas, -y_offset_from_global_canvas);
 	ctx.fill();
 	ctx.restore();
+}
+
+/**
+ * Stamp a mask onto dest. Fully transparent swatches punch a hole (destination-out)
+ * instead of source-over, which would be a no-op for alpha 0.
+ * @param {CanvasRenderingContext2D} dest_ctx
+ * @param {CanvasRenderingContext2D} mask_ctx
+ * @param {number} x
+ * @param {number} y
+ * @param {string | CanvasPattern | CanvasGradient} swatch
+ */
+function stamp_mask_with_swatch(dest_ctx, mask_ctx, x, y, swatch) {
+	if (is_fully_transparent_swatch(swatch)) {
+		dest_ctx.save();
+		dest_ctx.globalCompositeOperation = "destination-out";
+		dest_ctx.drawImage(mask_ctx.canvas, x, y);
+		dest_ctx.restore();
+		return;
+	}
+	replace_colors_with_swatch(mask_ctx, swatch, x, y);
+	dest_ctx.drawImage(mask_ctx.canvas, x, y);
 }
 
 /**
@@ -1623,8 +1673,7 @@ function draw_polygon_or_line_strip(ctx, points, stroke, fill, close_path) {
 		op_canvas_2d.height = op_canvas_webgl.height;
 
 		op_ctx_2d.drawImage(op_canvas_webgl, 0, 0);
-		replace_colors_with_swatch(op_ctx_2d, fill_color, x_min, y_min);
-		ctx.drawImage(op_canvas_2d, x_min, y_min);
+		stamp_mask_with_swatch(ctx, op_ctx_2d, x_min, y_min, fill_color);
 	}
 	if (stroke) {
 		if (stroke_size > 1) {
@@ -1649,8 +1698,7 @@ function draw_polygon_or_line_strip(ctx, points, stroke, fill, close_path) {
 				);
 			}
 
-			replace_colors_with_swatch(op_ctx_2d, stroke_color, op_canvas_x, op_canvas_y);
-			ctx.drawImage(op_canvas_2d, op_canvas_x, op_canvas_y);
+			stamp_mask_with_swatch(ctx, op_ctx_2d, op_canvas_x, op_canvas_y, stroke_color);
 		} else {
 			let numVertices = initArrayBuffer(coords);
 			gl.clear(gl.COLOR_BUFFER_BIT);
@@ -1660,8 +1708,7 @@ function draw_polygon_or_line_strip(ctx, points, stroke, fill, close_path) {
 			op_canvas_2d.height = op_canvas_webgl.height;
 
 			op_ctx_2d.drawImage(op_canvas_webgl, 0, 0);
-			replace_colors_with_swatch(op_ctx_2d, stroke_color, x_min, y_min);
-			ctx.drawImage(op_canvas_2d, x_min, y_min);
+			stamp_mask_with_swatch(ctx, op_ctx_2d, x_min, y_min, stroke_color);
 		}
 	}
 }
@@ -1723,8 +1770,7 @@ export function draw_with_swatch(ctx, x_min, y_min, x_max, y_max, swatch, callba
 	callback(op_ctx_2d);
 	op_ctx_2d.restore(); // for replace_colors_with_swatch!
 
-	replace_colors_with_swatch(op_ctx_2d, swatch, x, y);
-	ctx.drawImage(op_canvas_2d, x, y);
+	stamp_mask_with_swatch(ctx, op_ctx_2d, x, y, swatch);
 
 	// for debug:
 	// ctx.fillStyle = "rgba(255, 0, 255, 0.1)";
@@ -1733,8 +1779,8 @@ export function draw_with_swatch(ctx, x_min, y_min, x_max, y_max, swatch, callba
 
 export {
 	apply_image_transformation, bresenham_dense_line, bresenham_line, compute_bezier, draw_bezier_curve, draw_bezier_curve_without_pattern_support, draw_ellipse, draw_fill,
-	draw_fill_separately, draw_fill_without_pattern_support, draw_grid, draw_line, draw_line_without_pattern_support, draw_noncontiguous_fill,
-	draw_noncontiguous_fill_separately, draw_noncontiguous_fill_without_pattern_support, draw_quadratic_curve, draw_rounded_rectangle, find_color_globally, flip_horizontal,
-	flip_vertical, get_brush_canvas_size, get_circumference_points_for_brush, invert_monochrome, invert_rgb, render_brush, replace_color_globally, replace_colors_with_swatch, rotate, stamp_brush_canvas, stretch_and_skew, threshold_black_and_white, update_brush_for_drawing_lines
+	draw_fill_from_source_into_dest, draw_fill_separately, draw_fill_without_pattern_support, draw_grid, draw_line, draw_line_without_pattern_support, draw_noncontiguous_fill,
+	draw_noncontiguous_fill_from_source_into_dest, draw_noncontiguous_fill_separately, draw_noncontiguous_fill_without_pattern_support, draw_quadratic_curve, draw_rounded_rectangle, find_color_globally, flip_horizontal,
+	flip_vertical, get_brush_canvas_size, get_circumference_points_for_brush, get_fill_threshold, get_wand_threshold, invert_monochrome, invert_rgb, render_brush, replace_color_globally, replace_colors_with_swatch, rotate, set_fill_threshold, set_wand_threshold, stamp_brush_canvas, stretch_and_skew, threshold_black_and_white, update_brush_for_drawing_lines, with_color_threshold
 };
 

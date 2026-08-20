@@ -1,11 +1,11 @@
 // @ts-check
-/* global $canvas_area, $status_position, $status_size, main_canvas, main_ctx, selected_colors, tool_transparent_mode, transparency */
+/* global $canvas_area, $status_position, $status_size, layers, main_canvas, selected_colors, selection_all_layers, tool_transparent_mode */
 import { Handles } from "./Handles.js";
 import { OnCanvasObject } from "./OnCanvasObject.js";
 import { get_tool_by_id, make_or_update_undoable, undoable, update_helper_layer } from "./functions.js";
 import { $G, get_icon_for_tool, get_rgba_from_color, make_canvas, make_css_cursor, to_canvas_coords } from "./helpers.js";
-import { replace_colors_with_swatch } from "./image-manipulation.js";
-import { layerManager } from "./layers.js";
+import { rotate } from "./image-manipulation.js";
+import { composite_layers, get_active_layer, get_active_layer_context, mark_layer_dirty } from "./layers.js";
 import { TOOL_SELECT } from "./tools.js";
 
 class OnCanvasSelection extends OnCanvasObject {
@@ -35,6 +35,8 @@ class OnCanvasSelection extends OnCanvasObject {
 		};
 		$G.on("option-changed", this._on_option_changed);
 
+		/** @type {{ layerId: string, canvas: PixelCanvas }[]} */
+		this.layer_slices = [];
 		this.instantiate(image_source);
 	}
 	position() {
@@ -68,11 +70,12 @@ class OnCanvasSelection extends OnCanvasObject {
 				}
 				this.canvas = make_canvas(this.source_canvas);
 			} else {
-				if (layerManager._initialized) {
-					layerManager.composite();
-				}
 				this.source_canvas = make_canvas(this.width, this.height);
-				this.source_canvas.ctx.drawImage(main_canvas, this.x, this.y, this.width, this.height, 0, 0, this.width, this.height);
+				if (selection_all_layers) {
+					composite_layers();
+				}
+				const source = selection_all_layers ? main_canvas : get_active_layer().canvas;
+				this.source_canvas.ctx.drawImage(source, this.x, this.y, this.width, this.height, 0, 0, this.width, this.height);
 				this.canvas = make_canvas(this.source_canvas);
 				this.cut_out_background();
 			}
@@ -145,10 +148,10 @@ class OnCanvasSelection extends OnCanvasObject {
 					}, () => {
 						this.draw();
 					});
-				} else if (e.ctrlKey) { // @TODO: how should this work for macOS? where ctrl+click = secondary click?
+				} else if (e.ctrlKey || e.altKey) { // Alt-drag duplicates (stamp then move); Ctrl stamps as before
 					// Stamp selection
 					undoable({
-						name: "Stamp Selection",
+						name: e.altKey ? "Duplicate Selection" : "Stamp Selection",
 						icon: get_icon_for_tool(get_tool_by_id(TOOL_SELECT)),
 						soft: true,
 					}, () => {
@@ -164,75 +167,96 @@ class OnCanvasSelection extends OnCanvasObject {
 
 		instantiate();
 	}
-	cut_out_background() {
+	/**
+	 * Lift pixels inside the current selection mask and punch a hole.
+	 * Default: copy/punch only the active layer, keeping each pixel's alpha.
+	 * All layers: lift each visible layer separately and punch that same layer,
+	 * so a move can put every slice back without flattening.
+	 * @param {{ all_layers?: boolean }=} options
+	 */
+	cut_out_background(options = {}) {
+		const all_layers = options.all_layers ?? selection_all_layers;
 		const cutout = this.canvas;
-		if (layerManager._initialized) {
-			layerManager.composite();
-		}
-		// Visible pixels for the floating selection come from the composite; the hole is punched in the active layer only.
-		const compositeImageData = main_ctx.getImageData(this.x, this.y, this.width, this.height);
-		const doc_ctx = layerManager.getPaintingCtx();
-		const punchImageData = layerManager._initialized
-			? doc_ctx.getImageData(this.x, this.y, this.width, this.height)
-			: compositeImageData;
-		const cutoutImageData = cutout.ctx.getImageData(0, 0, this.width, this.height);
-		// cutoutImageData is initialized with the shape to be cut out (whether rectangular or polygonal)
-		// and should end up as the cut out image data for the selection
-		// canvasImageData is initially the portion of image data on the canvas,
-		// and should end up as... the portion of image data on the canvas that it should end up as.
-		// @TODO: could simplify by making the later (shared) condition just if (colored_cutout)
-		// but might change how it works anyways so whatever
-		// if (!transparency) { // now if !transparency or if tool_transparent_mode
-		// this is mainly in order to support patterns as the background color
-		// NOTE: must come before cutout canvas is modified
-		const colored_cutout = make_canvas(cutout);
-		replace_colors_with_swatch(colored_cutout.ctx, selected_colors.background, this.x, this.y);
-		// const colored_cutout_image_data = colored_cutout.ctx.getImageData(0, 0, this.width, this.height);
-		// }
-		for (let i = 0; i < cutoutImageData.data.length; i += 4) {
-			const in_cutout = cutoutImageData.data[i + 3] > 0;
-			if (in_cutout) {
-				cutoutImageData.data[i + 0] = compositeImageData.data[i + 0];
-				cutoutImageData.data[i + 1] = compositeImageData.data[i + 1];
-				cutoutImageData.data[i + 2] = compositeImageData.data[i + 2];
-				cutoutImageData.data[i + 3] = compositeImageData.data[i + 3];
-				punchImageData.data[i + 0] = 0;
-				punchImageData.data[i + 1] = 0;
-				punchImageData.data[i + 2] = 0;
-				punchImageData.data[i + 3] = 0;
-			} else {
-				cutoutImageData.data[i + 0] = 0;
-				cutoutImageData.data[i + 1] = 0;
-				cutoutImageData.data[i + 2] = 0;
-				cutoutImageData.data[i + 3] = 0;
+		const maskImageData = cutout.ctx.getImageData(0, 0, this.width, this.height);
+
+		const targets = all_layers ?
+			layers.filter((layer) => layer.visible) :
+			[get_active_layer()];
+		/** @type {{ layerId: string, canvas: PixelCanvas }[]} */
+		const slices = [];
+		for (const layer of targets) {
+			if (!layer) {
+				continue;
+			}
+			const layerImageData = layer.ctx.getImageData(this.x, this.y, this.width, this.height);
+			const lifted = cutout.ctx.createImageData(this.width, this.height);
+			let any = false;
+			for (let i = 0; i < maskImageData.data.length; i += 4) {
+				if (maskImageData.data[i + 3] > 0) {
+					lifted.data[i + 0] = layerImageData.data[i + 0];
+					lifted.data[i + 1] = layerImageData.data[i + 1];
+					lifted.data[i + 2] = layerImageData.data[i + 2];
+					lifted.data[i + 3] = layerImageData.data[i + 3];
+					if (layerImageData.data[i + 3] > 0) {
+						any = true;
+					}
+					layerImageData.data[i + 0] = 0;
+					layerImageData.data[i + 1] = 0;
+					layerImageData.data[i + 2] = 0;
+					layerImageData.data[i + 3] = 0;
+				}
+			}
+			layer.ctx.putImageData(layerImageData, this.x, this.y);
+			mark_layer_dirty(layer.id);
+			if (any || !all_layers) {
+				const slice_canvas = make_canvas(this.width, this.height);
+				slice_canvas.ctx.putImageData(lifted, 0, 0);
+				slices.push({ layerId: layer.id, canvas: slice_canvas });
 			}
 		}
-		if (layerManager._initialized) {
-			doc_ctx.putImageData(punchImageData, this.x, this.y);
-		} else {
-			main_ctx.putImageData(punchImageData, this.x, this.y);
-		}
-		cutout.ctx.putImageData(cutoutImageData, 0, 0);
-		this.update_tool_transparent_mode();
-		// NOTE: in case you want to use the tool_transparent_mode
-		// in a document with transparency (for an operation in an area where there's a local background color)
-		// (and since currently switching to the opaque document mode makes the image opaque)
-		// (and it would be complicated to make it update the canvas when switching tool options (as opposed to just the selection))
-		// I'm having it use the tool_transparent_mode option here, so you could at least choose beforehand
-		// (and this might actually give you more options, although it could be confusingly inconsistent)
-		// @FIXME: yeah, this is confusing; if you have both transparency modes on and you try to clear an area to transparency, it doesn't work
-		// and there's no indication that you should try the other selection transparency mode,
-		// and even if you do, if you do it after creating a selection, it still won't work,
-		// because you will have already *not cut out* the selection from the canvas
-		if (!transparency || tool_transparent_mode) {
-			doc_ctx.drawImage(colored_cutout, this.x, this.y);
-		}
+		this.layer_slices = slices;
 
-		if (layerManager._initialized) {
-			layerManager.composite();
+		cutout.ctx.clearRect(0, 0, this.width, this.height);
+		for (const slice of slices) {
+			const layer = layers.find((candidate) => candidate.id === slice.layerId);
+			cutout.ctx.save();
+			cutout.ctx.globalAlpha = layer && layer.opacity > 0 ? layer.opacity : 1;
+			cutout.ctx.drawImage(slice.canvas, 0, 0);
+			cutout.ctx.restore();
 		}
+		// Keep the lifted RGBA as the source so Transparent mode doesn't restore a composite/mask.
+		this.source_canvas = make_canvas(this.canvas);
+
+		this.update_tool_transparent_mode();
+		composite_layers();
+
 		$G.triggerHandler("session-update"); // autosave
 		update_helper_layer();
+	}
+	/**
+	 * @returns {{ layerId: string, image_data: ImageData }[] | null}
+	 */
+	get_layer_slice_data() {
+		if (!this.layer_slices?.length) {
+			return null;
+		}
+		return this.layer_slices.map((slice) => ({
+			layerId: slice.layerId,
+			image_data: slice.canvas.ctx.getImageData(0, 0, slice.canvas.width, slice.canvas.height),
+		}));
+	}
+	/**
+	 * @param {{ layerId: string, image_data: ImageData }[] | null | undefined} slices
+	 */
+	set_layer_slice_data(slices) {
+		if (!slices?.length) {
+			this.layer_slices = [];
+			return;
+		}
+		this.layer_slices = slices.map((slice) => ({
+			layerId: slice.layerId,
+			canvas: make_canvas(slice.image_data),
+		}));
 	}
 	update_tool_transparent_mode() {
 		const sourceImageData = this.source_canvas.ctx.getImageData(0, 0, this.width, this.height);
@@ -276,8 +300,26 @@ class OnCanvasSelection extends OnCanvasObject {
 	// @TODO: should Image > Invert apply to this.source_canvas or to this.canvas (replacing this.source_canvas with the result)?
 	/**
 	 * @param {PixelCanvas} new_source_canvas
+	 * @param {PixelCanvas[]=} new_slice_canvases
 	 */
-	replace_source_canvas(new_source_canvas) {
+	replace_source_canvas(new_source_canvas, new_slice_canvases) {
+		const old_width = this.source_canvas.width;
+		const old_height = this.source_canvas.height;
+		if (new_slice_canvases?.length && this.layer_slices?.length) {
+			this.layer_slices = this.layer_slices.map((slice, index) => ({
+				layerId: slice.layerId,
+				canvas: new_slice_canvases[index] || slice.canvas,
+			}));
+		} else if (
+			this.layer_slices?.length &&
+			(new_source_canvas.width !== old_width || new_source_canvas.height !== old_height)
+		) {
+			this.layer_slices = this.layer_slices.map((slice) => {
+				const next = make_canvas(new_source_canvas.width, new_source_canvas.height);
+				next.ctx.drawImage(slice.canvas, 0, 0, next.width, next.height);
+				return { layerId: slice.layerId, canvas: next };
+			});
+		}
 		this.source_canvas = new_source_canvas;
 		const new_canvas = make_canvas(new_source_canvas);
 		$(this.canvas).replaceWith(new_canvas);
@@ -316,15 +358,197 @@ class OnCanvasSelection extends OnCanvasObject {
 	}
 	draw() {
 		try {
-			layerManager.getPaintingCtx().drawImage(this.canvas, this.x, this.y);
-			if (layerManager._initialized) {
-				layerManager.composite();
+			if (this.layer_slices?.length) {
+				for (const slice of this.layer_slices) {
+					const layer = layers.find((candidate) => candidate.id === slice.layerId);
+					if (!layer) {
+						continue;
+					}
+					let source = slice.canvas;
+					if (tool_transparent_mode) {
+						source = this._canvas_with_transparent_mode(slice.canvas);
+					}
+					layer.ctx.drawImage(source, this.x, this.y);
+					mark_layer_dirty(layer.id);
+				}
+			} else {
+				get_active_layer_context().drawImage(this.canvas, this.x, this.y);
+				mark_layer_dirty();
 			}
+			composite_layers();
 		} catch (_error) {
 			// ignore
 		}
 	}
+	/**
+	 * @param {PixelCanvas} source
+	 * @returns {PixelCanvas}
+	 */
+	_canvas_with_transparent_mode(source) {
+		const filtered = make_canvas(source.width, source.height);
+		const sourceImageData = source.ctx.getImageData(0, 0, source.width, source.height);
+		const destImageData = filtered.ctx.createImageData(source.width, source.height);
+		const background_color_rgba = get_rgba_from_color(selected_colors.background);
+		const match_threshold = 1;
+		for (let i = 0; i < destImageData.data.length; i += 4) {
+			if (
+				Math.abs(sourceImageData.data[i + 0] - background_color_rgba[0]) <= match_threshold &&
+				Math.abs(sourceImageData.data[i + 1] - background_color_rgba[1]) <= match_threshold &&
+				Math.abs(sourceImageData.data[i + 2] - background_color_rgba[2]) <= match_threshold &&
+				Math.abs(sourceImageData.data[i + 3] - background_color_rgba[3]) <= match_threshold
+			) {
+				continue;
+			}
+			destImageData.data[i + 0] = sourceImageData.data[i + 0];
+			destImageData.data[i + 1] = sourceImageData.data[i + 1];
+			destImageData.data[i + 2] = sourceImageData.data[i + 2];
+			destImageData.data[i + 3] = sourceImageData.data[i + 3];
+		}
+		filtered.ctx.putImageData(destImageData, 0, 0);
+		return filtered;
+	}
+	/**
+	 * While Y is held: dragging near edges/handles rotates (Photoshop-style)
+	 * instead of stretching. Center drag still moves the selection.
+	 * @param {boolean} on
+	 */
+	set_rotate_modifier(on) {
+		this._rotate_modifier = on;
+		this.$el.toggleClass("y-rotate-mode", on);
+
+		if (on) {
+			if (!this._on_rotate_pointerdown) {
+				this._on_rotate_pointerdown = (e) => this._begin_edge_rotate(e);
+				this._on_rotate_pointermove = (e) => this._update_rotate_cursor(e);
+			}
+			this.$el[0].addEventListener("pointerdown", this._on_rotate_pointerdown, true);
+			this.$el[0].addEventListener("pointermove", this._on_rotate_pointermove, true);
+			this._update_rotate_cursor_style(true);
+		} else {
+			if (this._on_rotate_pointerdown) {
+				this.$el[0].removeEventListener("pointerdown", this._on_rotate_pointerdown, true);
+				this.$el[0].removeEventListener("pointermove", this._on_rotate_pointermove, true);
+			}
+			this.$el.css({ transform: "", transformOrigin: "", cursor: "" });
+			this._update_rotate_cursor_style(false);
+			if (this._rotating) {
+				this._rotating = false;
+			}
+		}
+	}
+	/**
+	 * @param {boolean} rotate_mode
+	 */
+	_update_rotate_cursor_style(rotate_mode) {
+		const cursor = rotate_mode ?
+			make_css_cursor("move", [8, 8], "grab") :
+			"";
+		this.$el.find(".handle, .grab-region").each((_i, el) => {
+			const $el = $(el);
+			if (rotate_mode) {
+				if (!$el.data("jspaint-resize-cursor")) {
+					$el.data("jspaint-resize-cursor", $el.css("cursor"));
+				}
+				$el.css("cursor", cursor);
+			} else {
+				const prev = $el.data("jspaint-resize-cursor");
+				if (prev != null) {
+					$el.css("cursor", prev);
+					$el.removeData("jspaint-resize-cursor");
+				}
+			}
+		});
+	}
+	/**
+	 * @param {PointerEvent} e
+	 * @returns {boolean}
+	 */
+	_is_near_selection_edge(e) {
+		const rect = this.$el[0].getBoundingClientRect();
+		const margin = 28;
+		const x = e.clientX;
+		const y = e.clientY;
+		const near_left = x >= rect.left - margin && x <= rect.left + margin;
+		const near_right = x >= rect.right - margin && x <= rect.right + margin;
+		const near_top = y >= rect.top - margin && y <= rect.top + margin;
+		const near_bottom = y >= rect.bottom - margin && y <= rect.bottom + margin;
+		const in_bounds =
+			x >= rect.left - margin && x <= rect.right + margin &&
+			y >= rect.top - margin && y <= rect.bottom + margin;
+		if (!in_bounds) {
+			return false;
+		}
+		const target = /** @type {HTMLElement} */ (e.target);
+		const on_handle = !!(target.closest && target.closest(".handle, .grab-region"));
+		// Corners / edges / handles → rotate. Deep interior → move.
+		return on_handle || near_left || near_right || near_top || near_bottom;
+	}
+	/**
+	 * @param {PointerEvent} e
+	 */
+	_update_rotate_cursor(e) {
+		if (!this._rotate_modifier || this._rotating) {
+			return;
+		}
+		if (this._is_near_selection_edge(e)) {
+			this.$el.css("cursor", make_css_cursor("move", [8, 8], "grab"));
+		} else {
+			this.$el.css("cursor", make_css_cursor("move", [8, 8], "move"));
+		}
+	}
+	/**
+	 * @param {PointerEvent} e
+	 */
+	_begin_edge_rotate(e) {
+		if (!this._rotate_modifier || e.button !== 0) {
+			return;
+		}
+		if (!this._is_near_selection_edge(e)) {
+			return; // let normal move / other handlers run
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		e.stopImmediatePropagation();
+
+		this._rotating = true;
+		const cx = this.x + this.width / 2;
+		const cy = this.y + this.height / 2;
+		const start = to_canvas_coords(e);
+		const start_angle = Math.atan2(start.y - cy, start.x - cx);
+		/** @type {number} */
+		let pending_angle = 0;
+
+		const on_move = (e2) => {
+			const p = to_canvas_coords(e2);
+			pending_angle = Math.atan2(p.y - cy, p.x - cx) - start_angle;
+			this.$el.css({
+				transform: `rotate(${pending_angle}rad)`,
+				transformOrigin: "50% 50%",
+			});
+			if (window.$status_text) {
+				window.$status_text.text(`Rotate: ${(pending_angle * 180 / Math.PI).toFixed(1)}°`);
+			}
+		};
+		const on_up = () => {
+			$G.off("pointermove", on_move);
+			this._rotating = false;
+			this.$el.css({ transform: "", transformOrigin: "" });
+			if (Math.abs(pending_angle) > 0.001) {
+				rotate(pending_angle);
+			}
+			if (window.$status_text?.default) {
+				window.$status_text.default();
+			}
+		};
+		$G.on("pointermove", on_move);
+		$G.one("pointerup", on_up);
+	}
+	/** @deprecated use set_rotate_modifier — kept for callers */
+	enable_free_transform() {
+		this.set_rotate_modifier(true);
+	}
 	destroy() {
+		this.set_rotate_modifier(false);
 		super.destroy();
 		$G.off("option-changed", this._on_option_changed);
 		update_helper_layer(); // @TODO: under-grid specific helper layer?

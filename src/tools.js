@@ -1,13 +1,14 @@
 // @ts-check
 /* global selection:writable, stroke_size:writable, textbox:writable */
-/* global $canvas, $canvas_area, $status_size, airbrush_size, brush_shape, brush_size, button, canvas_handles, ctrl, eraser_size, fill_color, pick_color_slot, get_language, localize, magnification, main_canvas, main_ctx, pencil_size, pointer, pointer_active, pointer_over_canvas, pointer_previous, pointer_start, return_to_magnification, selected_colors, shift, stroke_color, transparency */
+/* global $canvas, $canvas_area, $status_size, airbrush_size, alt, brush_shape, brush_size, button, canvas_handles, ctrl, eraser_size, fill_all_layers, fill_color, fill_replace_all, pick_color_slot, get_language, localize, magnification, main_canvas, main_ctx, meta, pencil_size, pointer, pointer_active, pointer_over_canvas, pointer_previous, pointer_start, return_to_magnification, selected_colors, selection_all_layers, shift, stroke_color, wand_all_layers, wand_replace_all */
 import { OnCanvasSelection } from "./OnCanvasSelection.js";
 import { OnCanvasTextBox } from "./OnCanvasTextBox.js";
 // import { get_language, localize } from "./app-localization.js";
-import { deselect, get_tool_by_id, meld_selection_into_canvas, meld_textbox_into_canvas, set_magnification, show_error_message, undoable, update_helper_layer } from "./functions.js";
-import { $G, E, get_icon_for_tool, get_icon_for_tools, get_rgba_from_color, make_canvas, make_css_cursor } from "./helpers.js";
-import { bresenham_dense_line, bresenham_line, copy_contents_within_polygon, draw_bezier_curve, draw_ellipse, draw_fill, draw_fill_separately, draw_line, draw_line_strip, draw_noncontiguous_fill, draw_polygon, draw_quadratic_curve, draw_rounded_rectangle, draw_selection_box, get_circumference_points_for_brush, replace_colors_with_swatch, stamp_brush_canvas, update_brush_for_drawing_lines } from "./image-manipulation.js";
-import { layerManager } from "./layers.js";
+import { deselect, get_tool_by_id, meld_selection_into_canvas, meld_textbox_into_canvas, set_magnification, show_error_message, undoable, undoable_option_change, update_helper_layer } from "./functions.js";
+import { $G, E, get_help_folder_icon, get_icon_for_tool, get_icon_for_tools, get_rgba_from_color, is_fully_transparent_swatch, make_canvas, make_css_cursor } from "./helpers.js";
+import { is_out_of_memory_error } from "./history-gif.js";
+import { bresenham_dense_line, bresenham_line, copy_contents_within_polygon, draw_bezier_curve, draw_ellipse, draw_fill, draw_fill_from_source_into_dest, draw_fill_separately, draw_line, draw_line_strip, draw_noncontiguous_fill, draw_noncontiguous_fill_from_source_into_dest, draw_noncontiguous_fill_separately, draw_polygon, draw_quadratic_curve, draw_rounded_rectangle, draw_selection_box, get_brush_canvas_size, get_circumference_points_for_brush, get_wand_threshold, replace_colors_with_swatch, stamp_brush_canvas, update_brush_for_drawing_lines, with_color_threshold } from "./image-manipulation.js";
+import { composite_layers, crop_layer_stack, draw_layers_except_active, get_active_layer, get_active_layer_context, sample_composite_color } from "./layers.js";
 import { $ChooseShapeStyle, $choose_airbrush_size, $choose_brush, $choose_eraser_size, $choose_magnification, $choose_stroke_size, $choose_transparent_mode } from "./tool-options.js";
 
 // This is for linting stuff at the bottom.
@@ -127,6 +128,7 @@ const TOOL_MAGNIFIER = "TOOL_MAGNIFIER";
 const TOOL_PENCIL = "TOOL_PENCIL";
 const TOOL_BRUSH = "TOOL_BRUSH";
 const TOOL_AIRBRUSH = "TOOL_AIRBRUSH";
+const TOOL_MAGIC_WAND = "TOOL_MAGIC_WAND";
 const TOOL_TEXT = "TOOL_TEXT";
 const TOOL_LINE = "TOOL_LINE";
 const TOOL_CURVE = "TOOL_CURVE";
@@ -134,6 +136,156 @@ const TOOL_RECTANGLE = "TOOL_RECTANGLE";
 const TOOL_POLYGON = "TOOL_POLYGON";
 const TOOL_ELLIPSE = "TOOL_ELLIPSE";
 const TOOL_ROUNDED_RECTANGLE = "TOOL_ROUNDED_RECTANGLE";
+
+/**
+ * Paint-bucket fill. Contiguous flood-fills a connected region; otherwise replaces matching colors.
+ * All-layers samples the composite so other layers act as boundaries, then paints only the active layer.
+ * @param {CanvasRenderingContext2D} layer_ctx
+ * @param {number} x
+ * @param {number} y
+ * @param {string | CanvasPattern} swatch
+ * @param {{contiguous: boolean, all_layers: boolean}} options
+ */
+function apply_bucket_fill(layer_ctx, x, y, swatch, { contiguous, all_layers }) {
+	if (!all_layers) {
+		if (contiguous) {
+			draw_fill(layer_ctx, x, y, swatch);
+		} else {
+			draw_noncontiguous_fill(layer_ctx, x, y, swatch);
+		}
+		return;
+	}
+	composite_layers();
+	// Solid color: paint the active layer using the composite as the sample source.
+	// Do not allocate a full-size mask canvas first — that extra bitmap was causing
+	// getImageData to throw "Out of memory at ImageData creation" on large documents.
+	if (typeof swatch === "string") {
+		const fill_rgba = get_rgba_from_color(swatch);
+		if (contiguous) {
+			draw_fill_from_source_into_dest(main_ctx, layer_ctx, x, y, fill_rgba[0], fill_rgba[1], fill_rgba[2], fill_rgba[3]);
+		} else {
+			draw_noncontiguous_fill_from_source_into_dest(main_ctx, layer_ctx, x, y, fill_rgba[0], fill_rgba[1], fill_rgba[2], fill_rgba[3]);
+		}
+		return;
+	}
+	const mask = make_canvas(main_canvas.width, main_canvas.height);
+	if (contiguous) {
+		draw_fill_separately(main_ctx, mask.ctx, x, y, 255, 255, 255, 255);
+	} else {
+		draw_noncontiguous_fill_separately(main_ctx, mask.ctx, x, y);
+	}
+	replace_colors_with_swatch(mask.ctx, swatch, 0, 0);
+	layer_ctx.drawImage(mask, 0, 0);
+}
+
+/**
+ * Magic Wand: build a color-match mask (contiguous flood or global replace), then
+ * cut those pixels from the active layer into an irregular floating selection.
+ * All-layers samples the composite so other layers act as boundaries.
+ * @param {number} x
+ * @param {number} y
+ * @param {{contiguous: boolean, all_layers: boolean, icon: HTMLImageElement | HTMLCanvasElement}} options
+ */
+function apply_magic_wand(x, y, { contiguous, all_layers, icon }) {
+	x = Math.max(0, Math.min(Math.floor(x), main_canvas.width - 1));
+	y = Math.max(0, Math.min(Math.floor(y), main_canvas.height - 1));
+	if (main_canvas.width < 1 || main_canvas.height < 1) {
+		return;
+	}
+
+	deselect();
+
+	if (all_layers) {
+		composite_layers();
+	}
+	const source_ctx = all_layers ? main_ctx : get_active_layer_context();
+	const mask = make_canvas(main_canvas.width, main_canvas.height);
+	with_color_threshold(get_wand_threshold(), () => {
+		if (contiguous) {
+			draw_fill_separately(source_ctx, mask.ctx, x, y, 255, 255, 255, 255);
+		} else {
+			draw_noncontiguous_fill_separately(source_ctx, mask.ctx, x, y);
+		}
+	});
+
+	const id = mask.ctx.getImageData(0, 0, mask.width, mask.height);
+	let x_min = mask.width;
+	let y_min = mask.height;
+	let x_max = -1;
+	let y_max = -1;
+	for (let i = 0; i < id.data.length; i += 4) {
+		if (id.data[i + 3] === 0) {
+			continue;
+		}
+		const px = (i / 4) % mask.width;
+		const py = Math.floor((i / 4) / mask.width);
+		if (px < x_min) { x_min = px; }
+		if (py < y_min) { y_min = py; }
+		if (px > x_max) { x_max = px; }
+		if (py > y_max) { y_max = py; }
+	}
+	if (x_max < 0) {
+		return;
+	}
+
+	const width = x_max - x_min + 1;
+	const height = y_max - y_min + 1;
+	const contents = make_canvas(width, height);
+	contents.ctx.drawImage(mask, x_min, y_min, width, height, 0, 0, width, height);
+
+	undoable({
+		name: "Magic Wand",
+		icon,
+		soft: true,
+	}, () => {
+		selection = new OnCanvasSelection(x_min, y_min, width, height, contents);
+		selection.cut_out_background({ all_layers: false });
+	});
+}
+
+/**
+ * @param {CanvasRenderingContext2D} ctx
+ * @returns {CanvasPattern | string}
+ */
+function get_transparency_checker_pattern(ctx) {
+	const tile = make_canvas(8, 8);
+	tile.ctx.fillStyle = "#ffffff";
+	tile.ctx.fillRect(0, 0, 8, 8);
+	tile.ctx.fillStyle = "#c0c0c0";
+	tile.ctx.fillRect(0, 0, 4, 4);
+	tile.ctx.fillRect(4, 4, 4, 4);
+	return ctx.createPattern(tile, "repeat") || "#c0c0c0";
+}
+
+/**
+ * Preview punching a hole in the active layer: checkerboard plus every other layer.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {HTMLCanvasElement} [mask]
+ */
+function preview_erase_active_layer(ctx, mask) {
+	const preview = make_canvas(mask ? mask.width : main_canvas.width, mask ? mask.height : main_canvas.height);
+	preview.ctx.fillStyle = get_transparency_checker_pattern(preview.ctx);
+	preview.ctx.fillRect(0, 0, preview.width, preview.height);
+	draw_layers_except_active(preview.ctx);
+	if (mask) {
+		preview.ctx.globalCompositeOperation = "destination-in";
+		preview.ctx.drawImage(mask, 0, 0);
+	}
+	ctx.drawImage(preview, 0, 0);
+}
+
+/**
+ * Pixels to copy into a Select / Free-Form Select. Default: active layer only.
+ * All layers: the visible composite.
+ * @returns {HTMLCanvasElement}
+ */
+function get_select_source_canvas() {
+	if (selection_all_layers) {
+		composite_layers();
+		return main_canvas;
+	}
+	return get_active_layer().canvas;
+}
 
 /** @type {Tool[]} */
 const tools = [{
@@ -210,7 +362,7 @@ const tools = [{
 		const rect_h = inversion_size;
 
 		const ctx_dest = this.preview_canvas.ctx;
-		const id_src = main_ctx.getImageData(rect_x, rect_y, rect_w, rect_h);
+		const id_src = get_active_layer_context().getImageData(rect_x, rect_y, rect_w, rect_h);
 		const id_dest = ctx_dest.getImageData(rect_x, rect_y, rect_w, rect_h);
 
 		for (let i = 0, l = id_dest.data.length; i < l; i += 4) {
@@ -229,7 +381,7 @@ const tools = [{
 		this.preview_canvas.height = 1;
 
 		const contents_within_polygon = copy_contents_within_polygon(
-			main_canvas,
+			get_select_source_canvas(),
 			this.points,
 			this.x_min,
 			this.y_min,
@@ -298,9 +450,7 @@ const tools = [{
 			}
 			if (ctrl) {
 				undoable({ name: "Crop" }, () => {
-					var cropped_canvas = make_canvas(rect_width, rect_height);
-					cropped_canvas.ctx.drawImage(main_canvas, -rect_x, -rect_y);
-					main_ctx.copy(cropped_canvas);
+					crop_layer_stack(rect_x, rect_y, rect_width, rect_height);
 					canvas_handles.show();
 					$canvas_area.trigger("resize"); // does this not also call canvas_handles.show()?
 				});
@@ -322,7 +472,7 @@ const tools = [{
 					y_max - y_min,
 				);
 				rect_canvas.ctx.drawImage(
-					main_canvas,
+					get_select_source_canvas(),
 					// source:
 					rect_x,
 					rect_y,
@@ -404,17 +554,16 @@ const tools = [{
 
 		if (this.mask_canvas) {
 			this.render_from_mask(ctx, true);
-			if (transparency) {
-				// animate for gradient
-				// TODO: is rAF needed? update_helper_layer uses rAF
-				requestAnimationFrame(() => {
-					update_helper_layer();
-				});
-			}
 		}
 
-		ctx.fillStyle = selected_colors.background;
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect(rect_x, rect_y, rect_w, rect_h);
+		ctx.clip();
+		ctx.fillStyle = get_transparency_checker_pattern(ctx);
 		ctx.fillRect(rect_x, rect_y, rect_w, rect_h);
+		draw_layers_except_active(ctx);
+		ctx.restore();
 	},
 	drawPreviewAboveGrid(ctx, x, y, grid_visible, scale, translate_x, translate_y) {
 		if (!pointer_active && !pointer_over_canvas) { return; }
@@ -437,38 +586,14 @@ const tools = [{
 		this.mask_canvas = make_canvas(main_canvas.width, main_canvas.height);
 	},
 	render_from_mask(ctx, previewing) {
+		if (previewing) {
+			preview_erase_active_layer(ctx, this.mask_canvas);
+			return;
+		}
 		ctx.save();
 		ctx.globalCompositeOperation = "destination-out";
 		ctx.drawImage(this.mask_canvas, 0, 0);
 		ctx.restore();
-
-		if (previewing || !transparency) {
-			/** @type {string | CanvasPattern | CanvasGradient} */
-			let color = selected_colors.background;
-			if (transparency) {
-				const t = performance.now() / 2000;
-				// @TODO: DRY
-				// animated rainbow effect representing transparency,
-				// in lieu of any good way to draw temporary transparency in the current setup
-				// 5 distinct colors, 5 distinct gradients, 7 color stops, 6 gradients
-				const n = 6;
-				const h = ctx.canvas.height;
-				const y = (t % 1) * -h * (n - 1);
-				const gradient = ctx.createLinearGradient(0, y, 0, y + h * n);
-				gradient.addColorStop(0 / n, "red");
-				gradient.addColorStop(1 / n, "gold");
-				gradient.addColorStop(2 / n, "#00d90b");
-				gradient.addColorStop(3 / n, "#2e64d9");
-				gradient.addColorStop(4 / n, "#8f2ed9");
-				// last two same as the first two so it can seamlessly wrap
-				gradient.addColorStop(5 / n, "red");
-				gradient.addColorStop(6 / n, "gold");
-				color = gradient;
-			}
-			const mask_fill_canvas = make_canvas(this.mask_canvas);
-			replace_colors_with_swatch(mask_fill_canvas.ctx, color, 0, 0);
-			ctx.drawImage(mask_fill_canvas, 0, 0);
-		}
 	},
 	pointerup() {
 		if (!this.mask_canvas) {
@@ -478,7 +603,8 @@ const tools = [{
 			name: get_language().match(/^en\b/) ? (this.color_eraser_mode ? "Color Eraser" : "Eraser") : localize("Eraser/Color Eraser"),
 			icon: get_icon_for_tool(this),
 		}, () => {
-			this.render_from_mask(layerManager.getPaintingCtx());
+			this.render_from_mask(get_active_layer_context());
+			composite_layers();
 
 			this.mask_canvas = null;
 		});
@@ -502,8 +628,8 @@ const tools = [{
 			this.mask_canvas.ctx.fillRect(rect_x, rect_y, rect_w, rect_h);
 		} else {
 			// Color Eraser
-			// Right click with the eraser to selectively replace
-			// the selected foreground color with the selected background color
+			// Right click with the eraser to selectively erase
+			// the selected foreground color to transparency
 
 			const fg_rgba = get_rgba_from_color(selected_colors.foreground);
 
@@ -543,40 +669,23 @@ const tools = [{
 	description: "Fills an area with the selected drawing color.",
 	cursor: ["fill-bucket", [8, 22], "crosshair"],
 	pointerdown(ctx, x, y) {
-		if (shift) {
+		const contiguous = !(shift || fill_replace_all);
+		try {
 			undoable({
-				name: "Replace Color",
+				name: contiguous ? localize("Fill With Color") : "Replace Color",
 				icon: get_icon_for_tool(this),
 			}, () => {
-				// Perform global color replacement
-				draw_noncontiguous_fill(ctx, x, y, fill_color);
+				apply_bucket_fill(ctx, x, y, fill_color, {
+					contiguous,
+					all_layers: fill_all_layers,
+				});
 			});
-		} else {
-			undoable({
-				name: localize("Fill With Color"),
-				icon: get_icon_for_tool(this),
-			}, () => {
-				if (
-					window.ks_fill_sample_all &&
-					typeof fill_color === "string" &&
-					window.layerManager?._initialized
-				) {
-					const sample = window.layerManager.getCompositeSampleCanvas();
-					const fill_rgba = get_rgba_from_color(fill_color);
-					draw_fill_separately(
-						sample.ctx,
-						ctx,
-						x,
-						y,
-						fill_rgba[0],
-						fill_rgba[1],
-						fill_rgba[2],
-						fill_rgba[3],
-					);
-				} else {
-					draw_fill(ctx, x, y, fill_color);
-				}
-			});
+		} catch (error) {
+			if (is_out_of_memory_error(error)) {
+				show_error_message(localize("Insufficient memory to perform operation."), error);
+				return;
+			}
+			throw error;
 		}
 	},
 }, {
@@ -610,25 +719,22 @@ const tools = [{
 		});
 	},
 	pointerdown() {
+		composite_layers();
 		$G.one("pointerup", () => {
 			this.$options.css({
 				background: "",
 			});
 		});
 	},
-	paint(ctx, x, y) {
-		if (x >= 0 && y >= 0 && x < main_canvas.width && y < main_canvas.height) {
-			const id = ctx.getImageData(~~x, ~~y, 1, 1);
-			const [r, g, b, a] = id.data;
-			this.current_color = `rgba(${r},${g},${b},${a / 255})`;
-		} else {
-			this.current_color = "white";
-		}
+	paint(_ctx, x, y) {
+		this.current_color = sample_composite_color(x, y);
 		this.display_current_color();
 	},
 	pointerup() {
-		selected_colors[pick_color_slot] = this.current_color;
-		$G.trigger("option-changed");
+		undoable_option_change({ name: localize("Pick Color"), icon: get_help_folder_icon("p_eye.gif") }, () => {
+			selected_colors[pick_color_slot] = this.current_color;
+			$G.trigger("option-changed");
+		});
 	},
 	$options: $(E("div")),
 }, {
@@ -792,31 +898,26 @@ const tools = [{
 	},
 	$options: $choose_brush,
 }, {
-	id: TOOL_AIRBRUSH,
-	name: localize("Airbrush"),
+	id: TOOL_MAGIC_WAND,
+	name: "Magic Wand",
 	speech_recognition: [
-		"air brush", "airbrush", "aerograph", "airbrushing", "air brushing",
-		"spray paint", "spraypaint", "paint spray", "spray painting", "spraypainting",
-		"spray paint can", "spraypaint can", "spraycan", "spray-can", "spray can",
-		"graffiti", "scatter", "splatter", "scattering", "splattering", "aerosol", "aerosol can", "throwie", "flamethrower",
+		"magic wand", "wand", "magic wand select", "wand select", "wand selector",
+		"select by color", "select same color", "select matching color", "select similar color",
+		"color select", "same color select", "select matching pixels", "select similar pixels",
+		"fuzzy select", "select connected color",
 	],
-	help_icon: "p_airb.gif",
-	description: localize("Draws using an airbrush of the selected size."),
-	cursor: ["airbrush", [7, 22], "crosshair"],
-	paint_on_time_interval: 5,
-	paint_mask(ctx, x, y) {
-		const r = airbrush_size / 2;
-		for (let i = 0; i < 6 + r / 5; i++) {
-			const rx = (Math.random() * 2 - 1) * r;
-			const ry = (Math.random() * 2 - 1) * r;
-			const d = rx * rx + ry * ry;
-			if (d <= r * r) {
-				ctx.fillRect(x + ~~rx, y + ~~ry, 1, 1);
-			}
-		}
-		update_helper_layer();
+	help_icon: "p_wand.png",
+	description: "Selects areas of the same color to move, copy, or edit.",
+	cursor: ["magic-wand", [10, 3], "crosshair"],
+	pointerdown(_ctx, x, y) {
+		const contiguous = !(shift || wand_replace_all);
+		apply_magic_wand(x, y, {
+			contiguous,
+			all_layers: wand_all_layers,
+			icon: get_icon_for_tool(this),
+		});
 	},
-	$options: $choose_airbrush_size,
+	$options: $choose_transparent_mode,
 }, {
 	id: TOOL_TEXT,
 	name: localize("Text"),
@@ -846,6 +947,7 @@ const tools = [{
 	description: localize("Draws a straight line with the selected line width."),
 	cursor: ["precise", [16, 16], "crosshair"],
 	stroke_only: true,
+	dynamic_preview_cursor: true,
 	shape(ctx, x, y, w, h) {
 		update_brush_for_drawing_lines(stroke_size);
 		draw_line(ctx, x, y, x + w, y + h, stroke_size);
@@ -986,24 +1088,36 @@ const tools = [{
 		if (w < 0) { x += w; w = -w; }
 		if (h < 0) { y += h; h = -h; }
 
+		const fill_erases = is_fully_transparent_swatch(ctx.fillStyle);
+		const stroke_erases = is_fully_transparent_swatch(ctx.strokeStyle);
 		if (this.$options.fill) {
-			ctx.fillRect(x, y, w, h);
-		}
-		if (this.$options.stroke) {
-			if (w < stroke_size * 2 || h < stroke_size * 2) {
+			if (fill_erases) {
 				ctx.save();
-				ctx.fillStyle = ctx.strokeStyle;
+				ctx.globalCompositeOperation = "destination-out";
+				ctx.fillStyle = "black";
 				ctx.fillRect(x, y, w, h);
 				ctx.restore();
 			} else {
-				ctx.save();
+				ctx.fillRect(x, y, w, h);
+			}
+		}
+		if (this.$options.stroke) {
+			ctx.save();
+			if (stroke_erases) {
+				ctx.globalCompositeOperation = "destination-out";
+				ctx.fillStyle = "black";
+			} else {
 				ctx.fillStyle = ctx.strokeStyle;
+			}
+			if (w < stroke_size * 2 || h < stroke_size * 2) {
+				ctx.fillRect(x, y, w, h);
+			} else {
 				ctx.fillRect(x, y, stroke_size, h);
 				ctx.fillRect(x + w - stroke_size, y, stroke_size, h);
 				ctx.fillRect(x, y, w, stroke_size);
 				ctx.fillRect(x, y + h - stroke_size, w, stroke_size);
-				ctx.restore();
 			}
+			ctx.restore();
 		}
 	},
 	$options: $ChooseShapeStyle(),
@@ -1299,9 +1413,69 @@ const tools = [{
 	$options: $ChooseShapeStyle(),
 }];
 
+/** Tools kept out of the main toolbox (reachable from Extras). */
+const hidden_tools = [{
+	id: TOOL_AIRBRUSH,
+	name: localize("Airbrush"),
+	speech_recognition: [
+		"air brush", "airbrush", "aerograph", "airbrushing", "air brushing",
+		"spray paint", "spraypaint", "paint spray", "spray painting", "spraypainting",
+		"spray paint can", "spraypaint can", "spraycan", "spray-can", "spray can",
+		"graffiti", "scatter", "splatter", "scattering", "splattering", "aerosol", "aerosol can", "throwie", "flamethrower",
+	],
+	help_icon: "p_airb.gif",
+	description: localize("Draws using an airbrush of the selected size."),
+	cursor: ["airbrush", [7, 22], "crosshair"],
+	paint_on_time_interval: 5,
+	paint_mask(ctx, x, y) {
+		const r = airbrush_size / 2;
+		for (let i = 0; i < 6 + r / 5; i++) {
+			const rx = (Math.random() * 2 - 1) * r;
+			const ry = (Math.random() * 2 - 1) * r;
+			const d = rx * rx + ry * ry;
+			if (d <= r * r) {
+				ctx.fillRect(x + ~~rx, y + ~~ry, 1, 1);
+			}
+		}
+		update_helper_layer();
+	},
+	$options: $choose_airbrush_size,
+}];
+
 /* eslint-enable no-restricted-syntax */
 
-tools.forEach((tool) => {
+/**
+ * Stroke-only circle centered at (x1, y1) with radius to (x2, y2).
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} x1
+ * @param {number} y1
+ * @param {number} x2
+ * @param {number} y2
+ * @returns {number} diameter (bounding box size)
+ */
+function draw_radius_circle(ctx, x1, y1, x2, y2) {
+	const radius = Math.hypot(x2 - x1, y2 - y1);
+	const diameter = radius * 2;
+	const x = x1 - radius;
+	const y = y1 - radius;
+	if (diameter < stroke_size) {
+		ctx.fillStyle = ctx.strokeStyle;
+		draw_ellipse(ctx, x, y, diameter, diameter, false, true);
+	} else {
+		draw_ellipse(
+			ctx,
+			x + ~~(stroke_size / 2),
+			y + ~~(stroke_size / 2),
+			diameter - stroke_size,
+			diameter - stroke_size,
+			true,
+			false
+		);
+	}
+	return diameter;
+}
+
+[...tools, ...hidden_tools].forEach((tool) => {
 	if (tool.selectBox) {
 		// TODO: is drag_start_x/y redundant with pointer_start.x/y?
 		let drag_start_x = 0;
@@ -1365,35 +1539,75 @@ tools.forEach((tool) => {
 			tool.shape_canvas = make_canvas(main_canvas.width, main_canvas.height);
 		};
 		tool.paint = () => {
-			const paint_ctx = layerManager.getPaintingCtx();
 			tool.shape_canvas.ctx.clearRect(0, 0, tool.shape_canvas.width, tool.shape_canvas.height);
-			tool.shape_canvas.ctx.fillStyle = paint_ctx.fillStyle;
-			tool.shape_canvas.ctx.strokeStyle = paint_ctx.strokeStyle;
-			tool.shape_canvas.ctx.lineWidth = paint_ctx.lineWidth;
-			tool.shape(tool.shape_canvas.ctx, pointer_start.x, pointer_start.y, pointer.x - pointer_start.x, pointer.y - pointer_start.y);
-			const signed_width = pointer.x - pointer_start.x || 1;
-			const signed_height = pointer.y - pointer_start.y || 1;
+			const drawing_ctx = get_active_layer_context();
+			tool.shape_canvas.ctx.fillStyle = drawing_ctx.fillStyle;
+			tool.shape_canvas.ctx.strokeStyle = drawing_ctx.strokeStyle;
+			tool.shape_canvas.ctx.lineWidth = drawing_ctx.lineWidth;
+			let x = pointer_start.x;
+			let y = pointer_start.y;
+			let w = pointer.x - pointer_start.x;
+			let h = pointer.y - pointer_start.y;
+			// Line + Command: circle using the drag as a radius (release Command to return to a line).
+			if (tool.id === TOOL_LINE && meta) {
+				const diameter = draw_radius_circle(
+					tool.shape_canvas.ctx,
+					pointer_start.x, pointer_start.y,
+					pointer.x, pointer.y
+				);
+				const signed = Math.round(diameter) || 1;
+				$status_size.text(`${signed}x${signed}`);
+				return;
+			}
+			// Ellipse: from center by default (old Alt+Shift circle). Shift restores corner-to-corner.
+			// Other shapes: Alt (Option on Mac) draws from center outward.
+			const from_center = tool.id === TOOL_ELLIPSE ? !shift : alt;
+			if (from_center) {
+				w = (pointer.x - pointer_start.x) * 2;
+				h = (pointer.y - pointer_start.y) * 2;
+				x = pointer_start.x - w / 2;
+				y = pointer_start.y - h / 2;
+			}
+			tool.shape(tool.shape_canvas.ctx, x, y, w, h);
+			const signed_width = Math.round(w) || 1;
+			const signed_height = Math.round(h) || 1;
 			$status_size.text(`${signed_width}x${signed_height}`);
 		};
 		tool.pointerup = () => {
 			$status_size.text(""); // also handles canceling with two mouse buttons or escape key
 			if (!tool.shape_canvas) { return; }
+			const as_circle = tool.id === TOOL_LINE && meta;
+			const history_tool = as_circle ? get_tool_by_id(TOOL_ELLIPSE) : tool;
 			undoable({
-				name: tool.name,
-				icon: get_icon_for_tool(tool),
+				name: history_tool.name,
+				icon: get_icon_for_tool(history_tool),
 			}, () => {
-				layerManager.getPaintingCtx().drawImage(tool.shape_canvas, 0, 0);
+				get_active_layer_context().drawImage(tool.shape_canvas, 0, 0);
+				composite_layers();
 				tool.shape_canvas = null;
 			});
 		};
 		tool.drawPreviewUnderGrid = (ctx, _x, _y, _grid_visible, scale, translate_x, translate_y) => {
-			if (!pointer_active) { return; }
-			if (!tool.shape_canvas) { return; }
+			if (pointer_active && tool.shape_canvas) {
+				ctx.scale(scale, scale);
+				ctx.translate(translate_x, translate_y);
+				ctx.drawImage(tool.shape_canvas, 0, 0);
+				return;
+			}
+
+			// Idle stroke-size cursor preview (e.g. line tool), like the brush tool.
+			if (!tool.dynamic_preview_cursor) { return; }
+			if (!pointer_over_canvas || !pointer) { return; }
 
 			ctx.scale(scale, scale);
 			ctx.translate(translate_x, translate_y);
 
-			ctx.drawImage(tool.shape_canvas, 0, 0);
+			const csz = get_brush_canvas_size(stroke_size, "circle");
+			const preview = make_canvas(csz, csz);
+			const center = Math.ceil(csz / 2);
+			stamp_brush_canvas(preview.ctx, center, center, "circle", stroke_size);
+			replace_colors_with_swatch(preview.ctx, stroke_color);
+			ctx.drawImage(preview, pointer.x - center, pointer.y - center);
 		};
 	}
 	if (tool.paint_mask) {
@@ -1421,7 +1635,8 @@ tools.forEach((tool) => {
 				name: tool.name,
 				icon: get_icon_for_tool(tool),
 			}, () => {
-				tool.render_from_mask(layerManager.getPaintingCtx());
+				tool.render_from_mask(get_active_layer_context());
+				composite_layers();
 
 				tool.mask_canvas.width = 1;
 				tool.mask_canvas.height = 1;
@@ -1517,7 +1732,8 @@ tools.forEach((tool) => {
 				name: tool.name,
 				icon: get_icon_for_tool(tool),
 			}, () => {
-				tool.render_from_mask(layerManager.getPaintingCtx());
+				tool.render_from_mask(get_active_layer_context());
+				composite_layers();
 
 				tool.mask_canvas.width = 1;
 				tool.mask_canvas.height = 1;
@@ -1610,12 +1826,11 @@ tools.forEach((tool) => {
 	}
 });
 
-
 export {
 	TOOL_AIRBRUSH, TOOL_BRUSH, TOOL_CURVE, TOOL_ELLIPSE, TOOL_ERASER,
-	TOOL_FILL, TOOL_FREE_FORM_SELECT, TOOL_LINE, TOOL_MAGNIFIER,
+	TOOL_FILL, TOOL_FREE_FORM_SELECT, TOOL_LINE, TOOL_MAGNIFIER, TOOL_MAGIC_WAND,
 	TOOL_PENCIL, TOOL_PICK_COLOR, TOOL_POLYGON, TOOL_RECTANGLE, TOOL_ROUNDED_RECTANGLE, TOOL_SELECT, TOOL_TEXT,
-	tools
+	hidden_tools, tools
 };
 // Temporary globals until all dependent code is converted to ES Modules
 window.TOOL_PENCIL = TOOL_PENCIL; // used by app-state.js

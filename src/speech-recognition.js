@@ -3,11 +3,12 @@
 /* global airbrush_size:writable, brush_size:writable, eraser_size:writable, pencil_size:writable, stroke_size:writable, pointer_active:writable, pointer_over_canvas:writable, pointer_previous:writable, pointer:writable */
 /* global $canvas_area, $status_text, button, localize, main_canvas, main_ctx, MENU_DIVIDER, selected_colors, selected_tool, selected_tools, tool_go */
 // import { localize } from "./app-localization.js";
-import { deselect, get_tool_by_id, resize_canvas_without_saving_dimensions, select_tool, show_error_message, update_helper_layer } from "./functions.js";
-import { $G, make_canvas } from "./helpers.js";
+import { deselect, get_tool_by_id, resize_canvas_without_saving_dimensions, select_tool, show_error_message, undoable_option_change, update_helper_layer } from "./functions.js";
+import { $G, get_help_folder_icon, make_canvas } from "./helpers.js";
+import { composite_layers, get_active_layer_context } from "./layers.js";
 import { menus } from "./menus.js";
 import { stopSimulatingGestures } from "./simulate-random-gestures.js";
-import { TOOL_AIRBRUSH, TOOL_BRUSH, TOOL_CURVE, TOOL_ELLIPSE, TOOL_ERASER, TOOL_FILL, TOOL_FREE_FORM_SELECT, TOOL_LINE, TOOL_PENCIL, TOOL_POLYGON, TOOL_RECTANGLE, TOOL_ROUNDED_RECTANGLE, TOOL_SELECT, TOOL_TEXT, tools } from "./tools.js";
+import { TOOL_AIRBRUSH, TOOL_BRUSH, TOOL_CURVE, TOOL_ELLIPSE, TOOL_ERASER, TOOL_FILL, TOOL_FREE_FORM_SELECT, TOOL_LINE, TOOL_PENCIL, TOOL_POLYGON, TOOL_RECTANGLE, TOOL_ROUNDED_RECTANGLE, TOOL_SELECT, TOOL_TEXT, hidden_tools, tools } from "./tools.js";
 
 export let speech_recognition_active = false;
 
@@ -1514,13 +1515,15 @@ if (speech_recognition_available) {
 				add_interpretation({
 					match_text: color,
 					exec: ((color) => () => {
-						selected_colors.foreground = color;
-						$G.trigger("option-changed");
+						undoable_option_change({ name: "Select Color", icon: get_help_folder_icon("p_color.png") }, () => {
+							selected_colors.foreground = color;
+							$G.trigger("option-changed");
+						});
 					})(color),
 				});
 			}
 		}
-		for (const tool of tools) {
+		for (const tool of [...tools, ...hidden_tools]) {
 			for (const base_tool_phrase of tool.speech_recognition) {
 				// Note: if "select" wasn't matched here, the phrase "select text" would select the Select tool instead of the Text tool (because "select" is longer than "text")
 				const select_tool_match = input_text.match(new RegExp(`\\b(?:(?:select|pick|choose|use|activate|pick up|grab) )?(?:the )?${escapeRegExp(base_tool_phrase)}(?: tool)?\\b`, "i"));
@@ -2015,19 +2018,20 @@ if (speech_recognition_available) {
 			if (!segment) {
 				segment_index = 0;
 				path_index += 1;
-				brush.pointerup(main_ctx, pointer.x, pointer.y);
+				brush.pointerup(get_active_layer_context(), pointer.x, pointer.y);
 				return;
 			}
 			let { x1, y1, x2, y2 } = segment;
 			if (path !== active_path) {
 				pointer_previous = { x: x1, y: y1 };
 				pointer = { x: x1, y: y1 };
-				brush.pointerdown(main_ctx, x1, y1);
+				brush.pointerdown(get_active_layer_context(), x1, y1);
 				active_path = path;
 			}
 			pointer_previous = { x: x1, y: y1 };
 			pointer = { x: x2, y: y2 };
-			brush.paint(main_ctx, x2, y2);
+			brush.paint(get_active_layer_context(), x2, y2);
+			composite_layers();
 			pointer_active = true;
 			pointer_over_canvas = true;
 			update_helper_layer();

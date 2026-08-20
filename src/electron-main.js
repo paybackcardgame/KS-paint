@@ -155,6 +155,54 @@ const createWindow = () => {
 	// @TODO: maybe use the native menu for the "Modern" theme, or a "Native" theme
 	editor_window.setMenu(null);
 
+	// Steal Chromium-reserved accelerators (Cmd+N, Cmd+T, Cmd+W, …) so they
+	// stay in the app instead of opening a new window/tab.
+	/** @type {{key: string, mod: boolean, alt: boolean, shift: boolean}[]} */
+	let captured_shortcuts = [];
+	ipcMain.removeAllListeners("set-captured-shortcuts");
+	ipcMain.on("set-captured-shortcuts", (_event, accelerators) => {
+		captured_shortcuts = Array.isArray(accelerators) ? accelerators : [];
+	});
+	editor_window.webContents.on("before-input-event", (event, input) => {
+		if (input.type !== "keyDown") {
+			return;
+		}
+		if (input.isAutoRepeat) {
+			return;
+		}
+		if (editor_window.webContents.isDevToolsFocused()) {
+			return;
+		}
+		const key = String(input.key || "").toLowerCase();
+		const match = captured_shortcuts.find((desc) => {
+			if (!desc) {
+				return false;
+			}
+			if (!!desc.shift !== !!input.shift) {
+				return false;
+			}
+			if (!!desc.alt !== !!input.alt) {
+				return false;
+			}
+			if (!!desc.mod !== !!(input.control || input.meta)) {
+				return false;
+			}
+			return key === String(desc.key || "").toLowerCase();
+		});
+		if (!match) {
+			return;
+		}
+		event.preventDefault();
+		editor_window.webContents.send("captured-shortcut", {
+			key: input.key,
+			code: input.code,
+			control: input.control,
+			meta: input.meta,
+			shift: input.shift,
+			alt: input.alt,
+		});
+	});
+
 	// and load the index.html of the app.
 	editor_window.loadURL(`file://${__dirname}/../index.html`);
 
@@ -420,8 +468,8 @@ const createWindow = () => {
 					// but the app supports Cmd for all Ctrl shortcuts.
 					// @TODO: use "CmdOrCtrl", make OS-GUI.js support it, and simplify this.
 					accelerator:
-						menu_item.shortcut ?
-							menu_item.shortcut
+						(menu_item.shortcutLabel || menu_item.shortcut) ?
+							(menu_item.shortcutLabel || menu_item.shortcut)
 								.replace(/^F4$/, "Shift+Cmd+Z")
 								.replace(/Ctrl/g, "Cmd") :
 							undefined,

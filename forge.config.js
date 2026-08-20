@@ -24,6 +24,8 @@ const sharedDebRpmOptions = {
 		"image/vnd.microsoft.icon",
 		"image/x-win-bitmap",
 		"image/x-icns",
+		"image/vnd.adobe.photoshop",
+		"application/x-photoshop",
 		"application/x-gimp-palette",
 	],
 };

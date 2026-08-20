@@ -1,11 +1,13 @@
 // @ts-check
-/* global tool_transparent_mode:writable, palette:writable, show_font_box:writable */
-/* global $canvas_area, $colorbox, $layerbox, $status_area, $toolbox, available_languages, get_iso_language_name, get_language, get_language_emoji, get_language_endonym, localize, magnification, main_canvas, menu_bar, MENU_DIVIDER, redos, selection, set_language, show_grid, show_thumbnail, systemHooks, textbox, undos */
+/* global tool_transparent_mode:writable, palette:writable, polychrome_palette:writable, current_palette_id:writable, show_font_box:writable */
+/* global $canvas_area, $colorbox, $layersbox, $status_area, $toolbox, active_layer_id, available_languages, get_iso_language_name, get_language, get_language_emoji, get_language_endonym, layers, localize, magnification, main_canvas, menu_bar, MENU_DIVIDER, redos, selection, set_language, show_grid, show_thumbnail, systemHooks, textbox, undos */
 // import { available_languages, get_iso_language_name, get_language, get_language_emoji, get_language_endonym, localize, set_language } from "./app-localization.js";
 import { OnCanvasTextBox } from "./OnCanvasTextBox.js";
+import { show_layers_box, toggle_layers_box } from "./$LayersBox.js";
 import { show_edit_colors_window } from "./edit-colors.js";
+import { import_template_from_file, save_as_default_template, save_template_to_file } from "./document-template.js";
 import { palette_formats } from "./file-format-data.js";
-import { are_you_sure, change_url_param, choose_file_to_paste, clear, delete_selection, deselect, edit_copy, edit_cut, edit_paste, file_load_from_url, file_new, file_open, file_print, file_save, file_save_as, image_attributes, image_flip_and_rotate, image_invert_colors, image_stretch_and_skew, redo, render_history_as_gif, sanity_check_blob, save_selection_to_file, select_all, set_magnification, show_about_paint, show_custom_zoom_window, show_document_history, show_file_format_errors, show_multi_user_setup_dialog, show_news, toggle_grid, toggle_thumbnail, undo, view_bitmap } from "./functions.js";
+import { are_you_sure, change_url_param, choose_file_to_paste, clear, delete_selection, deselect, duplicate_layer_and_select_contents, edit_copy, edit_cut, edit_paste, file_export_as, file_export_png, file_load_from_url, file_new, file_open, file_print, file_save, file_save_as, get_tool_by_id, image_attributes, image_flip_and_rotate, image_invert_colors, image_stretch_and_skew, redo, render_history_as_gif, sanity_check_blob, save_selection_to_file, select_all, select_tool, set_magnification, show_about_paint, show_custom_zoom_window, show_document_history, show_file_format_errors, show_multi_user_setup_dialog, show_news, toggle_grid, toggle_thumbnail, undo, undoable, view_bitmap, apply_named_palette } from "./functions.js";
 import { show_help } from "./help.js";
 import { $G, get_rgba_from_color, is_discord_embed } from "./helpers.js";
 import { show_imgur_uploader } from "./imgur.js";
@@ -14,17 +16,16 @@ import { showMessageBox } from "./msgbox.js";
 import { simulateRandomGesturesPeriodically, simulatingGestures, stopSimulatingGestures } from "./simulate-random-gestures.js";
 import { speech_recognition_active, speech_recognition_available } from "./speech-recognition.js";
 import { get_theme, set_theme } from "./theme.js";
-
-const looksLikeChrome = !!(window.chrome && (window.chrome.loadTimes || window.chrome.csi));
-// NOTE: Microsoft Edge includes window.chrome.app
-// (also this browser detection logic could likely use some more nuance)
+import { add_layer, delete_layer, is_layer_locked, merge_layer_down, set_layer_locked } from "./layers.js";
+import { shortcut, show_shortcut_settings_window } from "./shortcut-settings.js";
+import { TOOL_AIRBRUSH } from "./tools.js";
 
 /** @type {OSGUITopLevelMenus} */
 const menus = {
 	[localize("&File")]: [
 		{
 			label: localize("&New"),
-			...shortcut(window.is_electron_app ? "Ctrl+N" : "Ctrl+Alt+N"), // Ctrl+N opens a new browser window
+			...shortcut("file.new", "Ctrl+N"),
 			speech_recognition: [
 				"new", "new file", "new document", "create new document", "create a new document", "start new document", "start a new document",
 			],
@@ -33,7 +34,7 @@ const menus = {
 		},
 		{
 			label: localize("&Open"),
-			...shortcut("Ctrl+O"),
+			...shortcut("file.open", "Ctrl+O"),
 			speech_recognition: [
 				"open", "open document", "open file", "open an image file", "open a document", "open a file",
 				"load document", "load a document", "load an image file", "load an image",
@@ -45,7 +46,7 @@ const menus = {
 		},
 		{
 			label: localize("&Save"),
-			...shortcut("Ctrl+S"),
+			...shortcut("file.save", "Ctrl+S"),
 			speech_recognition: [
 				"save", "save document", "save file", "save image", "save picture", "save image file",
 				// "save a document", "save a file", "save an image", "save an image file", // too "save as"-like
@@ -61,7 +62,7 @@ const menus = {
 			label: localize("Save &As"),
 			// in mspaint, no shortcut is listed; it supports F12 (but in a browser that opens the dev tools)
 			// it doesn't support Ctrl+Shift+S but that's a good & common modern shortcut
-			...shortcut("Ctrl+Shift+S"),
+			...shortcut("file.save_as", "Ctrl+Shift+S"),
 			speech_recognition: [
 				// this is ridiculous
 				// this would be really simple in JSGF format
@@ -75,6 +76,43 @@ const menus = {
 			],
 			action: () => { file_save_as(); },
 			description: localize("Saves the active document with a new name."),
+		},
+		{
+			label: localize("Export &PNG"),
+			...shortcut("file.export_png", "Ctrl+E"),
+			action: () => { file_export_png(); },
+			description: localize("Exports a flattened PNG image."),
+		},
+		{
+			label: localize("&Export As"),
+			...shortcut("file.export_as", "Ctrl+Shift+E"),
+			action: () => { file_export_as(); },
+			description: localize("Exports a flattened image in another format."),
+		},
+		MENU_DIVIDER,
+		{
+			label: localize("Save as &Default Template"),
+			speech_recognition: [
+				"save as default template", "set default template", "save default template",
+			],
+			action: () => { save_as_default_template(); },
+			description: localize("Saves layers, colors, tools, and shortcuts as the default for new documents."),
+		},
+		{
+			label: localize("Save &Template"),
+			speech_recognition: [
+				"save template", "export template", "save as template",
+			],
+			action: () => { save_template_to_file(); },
+			description: localize("Saves layers, colors, tools, and shortcuts to a template file."),
+		},
+		{
+			label: localize("&Import Template"),
+			speech_recognition: [
+				"import template", "load template", "open template",
+			],
+			action: () => { import_template_from_file(); },
+			description: localize("Loads a template, replacing the current layers, colors, tools, and shortcuts."),
 		},
 		MENU_DIVIDER,
 		{
@@ -171,7 +209,7 @@ const menus = {
 		},
 		{
 			label: localize("&Print"),
-			...shortcut("Ctrl+P"), // relies on browser's print shortcut being Ctrl+P
+			...shortcut("file.print", "Ctrl+P"),
 			speech_recognition: [
 				"print", "send to printer", "show print dialog",
 				"print page", "print image", "print picture", "print drawing",
@@ -223,7 +261,7 @@ const menus = {
 		MENU_DIVIDER,
 		{
 			label: localize("E&xit"),
-			...shortcut(window.is_electron_app ? "Alt+F4" : ""), // Alt+F4 closes the browser window (in most window managers)
+			...shortcut("file.exit", "Alt+F4"),
 			speech_recognition: [
 				"exit application", "exit paint", "close paint window",
 			],
@@ -274,7 +312,7 @@ const menus = {
 	[localize("&Edit")]: [
 		{
 			label: localize("&Undo"),
-			...shortcut("Ctrl+Z"),
+			...shortcut("edit.undo", "Ctrl+Z"),
 			speech_recognition: [
 				"undo", "undo that",
 			],
@@ -284,7 +322,7 @@ const menus = {
 		},
 		{
 			label: localize("&Repeat"),
-			...shortcut("F4"), // also supported: Ctrl+Shift+Z, Ctrl+Y
+			...shortcut("edit.repeat", "F4"),
 			speech_recognition: [
 				"repeat", "redo",
 			],
@@ -294,7 +332,7 @@ const menus = {
 		},
 		{
 			label: localize("&History"),
-			...shortcut("Ctrl+Shift+Y"),
+			...shortcut("edit.history", "Ctrl+Shift+Y"),
 			speech_recognition: [
 				"show history", "history",
 			],
@@ -304,7 +342,7 @@ const menus = {
 		MENU_DIVIDER,
 		{
 			label: localize("Cu&t"),
-			...shortcut("Ctrl+X"),
+			...shortcut("edit.cut", "Ctrl+X"),
 			speech_recognition: [
 				"cut", "cut selection", "cut selection to clipboard", "cut the selection", "cut the selection to clipboard", "cut the selection to the clipboard",
 			],
@@ -318,7 +356,7 @@ const menus = {
 		},
 		{
 			label: localize("&Copy"),
-			...shortcut("Ctrl+C"),
+			...shortcut("edit.copy", "Ctrl+C"),
 			speech_recognition: [
 				"copy", "copy selection", "copy selection to clipboard", "copy the selection", "copy the selection to clipboard", "copy the selection to the clipboard",
 			],
@@ -332,7 +370,7 @@ const menus = {
 		},
 		{
 			label: localize("&Paste"),
-			...shortcut("Ctrl+V"),
+			...shortcut("edit.paste", "Ctrl+V"),
 			speech_recognition: [
 				"paste", "paste from clipboard", "paste from the clipboard", "insert clipboard", "insert clipboard contents", "insert the contents of the clipboard", "paste what's on the clipboard",
 			],
@@ -345,8 +383,20 @@ const menus = {
 			description: localize("Inserts the contents of the Clipboard."),
 		},
 		{
+			label: localize("Paste in Place"),
+			...shortcut("edit.paste_in_place", "Ctrl+Shift+V"),
+			speech_recognition: [
+				"paste in place", "paste at original position", "paste at the same position", "paste at the same coordinates",
+			],
+			enabled: () => true,
+			action: () => {
+				edit_paste(true, true);
+			},
+			description: localize("Inserts the contents of the Clipboard at the original coordinates."),
+		},
+		{
 			label: localize("C&lear Selection"),
-			...shortcut("Del"),
+			...shortcut("edit.clear_selection", "Del"),
 			speech_recognition: [
 				"delete", "clear selection", "delete selection", "delete selected", "delete selected area", "clear selected area", "erase selected", "erase selected area",
 			],
@@ -356,7 +406,7 @@ const menus = {
 		},
 		{
 			label: localize("Select &All"),
-			...shortcut("Ctrl+A"),
+			...shortcut("edit.select_all", "Ctrl+A"),
 			speech_recognition: [
 				"select all", "select everything",
 				"select the whole image", "select the whole picture", "select the whole drawing", "select the whole canvas", "select the whole document",
@@ -391,7 +441,7 @@ const menus = {
 	[localize("&View")]: [
 		{
 			label: localize("&Tool Box"),
-			...shortcut(window.is_electron_app ? "Ctrl+T" : ""), // Ctrl+T opens a new browser tab, Ctrl+Alt+T opens a Terminal in Ubuntu, and Ctrl+Shift+Alt+T feels silly.
+			...shortcut("view.toolbox", "Ctrl+T"),
 			speech_recognition: [
 				"toggle tool box", "toggle tools box", "toggle toolbox", "toggle tool palette", "toggle tools palette",
 				// @TODO: hide/show
@@ -406,7 +456,7 @@ const menus = {
 		},
 		{
 			label: localize("&Color Box"),
-			...shortcut("Ctrl+L"), // focuses browser address bar, but Firefox and Chrome both allow overriding the default behavior
+			...shortcut("view.colorbox", "Ctrl+L"),
 			speech_recognition: [
 				"toggle color box", "toggle colors box", "toggle palette", "toggle color palette", "toggle colors palette",
 				// @TODO: hide/show
@@ -418,6 +468,20 @@ const menus = {
 				check: () => $colorbox.is(":visible"),
 			},
 			description: localize("Shows or hides the color box."),
+		},
+		{
+			label: localize("&Layers"),
+			...shortcut("view.layers", "Ctrl+Shift+L"),
+			speech_recognition: [
+				"toggle layers", "toggle layers box", "toggle layer box", "toggle layer panel", "toggle layers panel",
+			],
+			checkbox: {
+				toggle: () => {
+					toggle_layers_box();
+				},
+				check: () => !!$layersbox && $layersbox.is(":visible"),
+			},
+			description: localize("Shows or hides the layers panel."),
 		},
 		{
 			label: localize("&Status Bar"),
@@ -432,19 +496,6 @@ const menus = {
 				check: () => $status_area.is(":visible"),
 			},
 			description: localize("Shows or hides the status bar."),
-		},
-		{
-			label: "La&yers",
-			speech_recognition: [
-				"toggle layers", "toggle layer panel", "toggle layer box", "toggle layers panel",
-			],
-			checkbox: {
-				toggle: () => {
-					$layerbox.toggle();
-				},
-				check: () => $layerbox.is(":visible"),
-			},
-			description: "Shows or hides the layers panel.",
 		},
 		{
 			label: localize("T&ext Toolbar"),
@@ -471,7 +522,7 @@ const menus = {
 			submenu: [
 				{
 					label: localize("&Normal Size"),
-					...shortcut(window.is_electron_app ? "Ctrl+PgUp" : ""), // Ctrl+PageUp cycles thru browser tabs in Chrome & Firefox; can be overridden in Chrome in fullscreen only
+					...shortcut("view.zoom_normal", "Ctrl+PgUp"),
 					speech_recognition: [
 						"reset zoom", "zoom to normal size",
 						"zoom to 100%", "set zoom to 100%", "set zoom 100%",
@@ -487,7 +538,7 @@ const menus = {
 				},
 				{
 					label: localize("&Large Size"),
-					...shortcut(window.is_electron_app ? "Ctrl+PgDn" : ""), // Ctrl+PageDown cycles thru browser tabs in Chrome & Firefox; can be overridden in Chrome in fullscreen only
+					...shortcut("view.zoom_large", "Ctrl+PgDn"),
 					speech_recognition: [
 						"zoom to large size",
 						"zoom to 400%", "set zoom to 400%", "set zoom 400%",
@@ -546,7 +597,7 @@ const menus = {
 				MENU_DIVIDER,
 				{
 					label: localize("Show &Grid"),
-					...shortcut("Ctrl+G"),
+					...shortcut("view.grid", "Ctrl+G"),
 					speech_recognition: [
 						"toggle show grid",
 						"toggle grid", "toggle gridlines", "toggle grid lines", "toggle grid cells",
@@ -578,7 +629,7 @@ const menus = {
 		},
 		{
 			label: localize("&View Bitmap"),
-			...shortcut("Ctrl+F"),
+			...shortcut("view.bitmap", "Ctrl+F"),
 			speech_recognition: [
 				"view bitmap", "show bitmap",
 				"fullscreen", "full-screen", "full screen",
@@ -592,7 +643,7 @@ const menus = {
 		MENU_DIVIDER,
 		{
 			label: localize("&Fullscreen"),
-			...shortcut("F11"), // relies on browser's shortcut
+			...shortcut("view.fullscreen", "F11"),
 			speech_recognition: [
 				// won't work with speech recognition, needs a user gesture
 			],
@@ -625,7 +676,7 @@ const menus = {
 		// @TODO: speech recognition: terms that apply to selection
 		{
 			label: localize("&Flip/Rotate"),
-			...shortcut((window.is_electron_app && !window.electron_is_dev) ? "Ctrl+R" : "Ctrl+Alt+R"), // Ctrl+R reloads the browser tab (or Electron window in dev mode via electron-debug)
+			...shortcut("image.flip_rotate", (window.is_electron_app && !window.electron_is_dev) ? "Ctrl+R" : "Ctrl+Alt+R"),
 			speech_recognition: [
 				"flip",
 				"rotate",
@@ -637,7 +688,7 @@ const menus = {
 		},
 		{
 			label: localize("&Stretch/Skew"),
-			...shortcut(window.is_electron_app ? "Ctrl+W" : "Ctrl+Alt+W"), // Ctrl+W closes the browser tab
+			...shortcut("image.stretch_skew", window.is_electron_app ? "Ctrl+W" : "Ctrl+Alt+W"),
 			speech_recognition: [
 				"stretch", "scale", "resize image",
 				"skew",
@@ -649,7 +700,7 @@ const menus = {
 		},
 		{
 			label: localize("&Invert Colors"),
-			...shortcut("Ctrl+I"),
+			...shortcut("image.invert", "Ctrl+I"),
 			speech_recognition: [
 				"invert",
 				"invert colors",
@@ -662,7 +713,6 @@ const menus = {
 		},
 		{
 			label: `${localize("&Attributes")}...`,
-			...shortcut("Ctrl+E"),
 			speech_recognition: [
 				"attributes", "image attributes", "picture attributes", "image options", "picture options",
 				"dimensions", "image dimensions", "picture dimensions",
@@ -676,7 +726,7 @@ const menus = {
 		},
 		{
 			label: localize("&Clear Image"),
-			...shortcut((window.is_electron_app || !looksLikeChrome) ? "Ctrl+Shift+N" : ""), // Ctrl+Shift+N opens incognito window in chrome
+			...shortcut("image.clear", "Ctrl+Shift+N"),
 			speech_recognition: [
 				"clear image", "clear canvas", "clear picture", "clear page", "clear drawing",
 				// @TODO: erase?
@@ -715,7 +765,97 @@ const menus = {
 			description: localize("Makes the current selection either opaque or transparent."),
 		},
 	],
+	[localize("&Layers")]: [
+		{
+			label: localize("&Show Layers"),
+			...shortcut("view.layers", "Ctrl+Shift+L"),
+			action: () => { show_layers_box(); },
+			description: localize("Shows the layer stack."),
+		},
+		MENU_DIVIDER,
+		{
+			label: localize("&New Layer"),
+			...shortcut("layers.new", "Ctrl+Shift+Alt+N"),
+			action: () => { undoable({ name: "New Layer" }, () => add_layer()); },
+			description: localize("Adds a new transparent layer."),
+		},
+		{
+			label: localize("&Duplicate Layer"),
+			...shortcut("layers.duplicate", "Ctrl+D"),
+			action: () => { duplicate_layer_and_select_contents(); },
+			description: localize("Duplicates the active layer and selects its content."),
+		},
+		{
+			label: localize("&Delete Layer"),
+			...shortcut("layers.delete", "Ctrl+Shift+Alt+D"),
+			enabled: () => layers.length > 1 && !is_layer_locked(),
+			action: () => { undoable({ name: "Delete Layer" }, () => delete_layer()); },
+			description: localize("Deletes the active layer."),
+		},
+		{
+			label: localize("&Merge Down"),
+			...shortcut("layers.merge_down", "Ctrl+Shift+Alt+E"),
+			enabled: () => layers.findIndex((layer) => layer.id === active_layer_id) > 0,
+			action: () => { undoable({ name: "Merge Down" }, () => merge_layer_down()); },
+			description: localize("Merges the active layer with the layer below."),
+		},
+		{
+			label: localize("&Lock Layer"),
+			checkbox: {
+				toggle: () => {
+					const active = layers.find((layer) => layer.id === active_layer_id);
+					if (!active) {
+						return;
+					}
+					undoable({ name: active.locked ? "Unlock Layer" : "Lock Layer" }, () => {
+						set_layer_locked(active.id, !active.locked);
+					});
+				},
+				check: () => is_layer_locked(),
+			},
+			description: localize("Prevents painting on the active layer."),
+		},
+	],
 	[localize("&Colors")]: [
+		{
+			label: localize("&Palettes"),
+			submenu: [
+				{
+					radioItems: [
+						{
+							label: localize("&Classic"),
+							value: "classic",
+							speech_recognition: [
+								"classic palette", "default palette", "ms paint palette", "windows palette",
+							],
+							description: localize("Uses the original MS Paint color palette."),
+						},
+						{
+							label: "KP &color",
+							value: "kp",
+							speech_recognition: [
+								"kp color", "kp palette", "kp color palette",
+							],
+							description: "Spectrum palette with 12% / 25% / 50% / 75% luminance rows.",
+						},
+						{
+							label: localize("&Winter"),
+							value: "winter",
+							speech_recognition: [
+								"winter palette", "holiday palette",
+							],
+							description: localize("Uses the Winter theme color palette."),
+						},
+					],
+					getValue: () => current_palette_id,
+					setValue: (id) => {
+						apply_named_palette(id);
+					},
+					ariaLabel: "Color palettes",
+				},
+			],
+		},
+		MENU_DIVIDER,
 		{
 			label: `${localize("&Edit Colors")}...`,
 			speech_recognition: [
@@ -740,6 +880,8 @@ const menus = {
 						show_file_format_errors({ as_palette_error: error });
 					} else {
 						palette = new_palette.map((color) => color.toString());
+						polychrome_palette = palette;
+						current_palette_id = "custom";
 						$colorbox.rebuild_palette();
 						window.console?.log(`Loaded palette: ${palette.map(() => "%c█").join("")}`, ...palette.map((color) => `color: ${color};`));
 					}
@@ -785,6 +927,7 @@ const menus = {
 	[localize("&Help")]: [
 		{
 			label: localize("&Help Topics"),
+			...shortcut("help.topics", "F1"),
 			speech_recognition: [
 				"help topics", "help me", "show help", "help", "show help window", "show help topics", "open help",
 				"help viewer", "show help viewer", "open help viewer",
@@ -810,7 +953,7 @@ const menus = {
 		{
 			emoji_icon: "⌚",
 			label: localize("&History"),
-			...shortcut("Ctrl+Shift+Y"),
+			...shortcut("edit.history", "Ctrl+Shift+Y"),
 			speech_recognition: [
 				// This is a duplicate menu item (for easy access), so it doesn't need speech recognition data here.
 			],
@@ -820,7 +963,7 @@ const menus = {
 		{
 			emoji_icon: "🎞️",
 			label: localize("&Render History As GIF"),
-			...shortcut("Ctrl+Shift+G"),
+			...shortcut("extras.gif", "Ctrl+Shift+G"),
 			speech_recognition: [
 				// @TODO: animated gif, blah
 				"render history as gif", "render history as a gif", "render history animation", "make history animation", "make animation of history", "make animation of document history", "make animation from document history",
@@ -840,12 +983,24 @@ const menus = {
 			action: () => { render_history_as_gif(); },
 			description: localize("Creates an animation from the document history."),
 		},
-		// {
-		// 	label: localize("Render History as &APNG",
-		// 	// shortcut: "Ctrl+Shift+A",
-		// 	action: ()=> { render_history_as_apng(); },
-		// 	description: localize("Creates an animation from the document history."),
-		// },
+		{
+			emoji_icon: "⌨️",
+			label: localize("&Keyboard Shortcuts..."),
+			speech_recognition: [
+				"keyboard shortcuts", "edit keyboard shortcuts", "shortcut settings", "keymap", "edit keymap", "customize shortcuts", "customize keyboard shortcuts",
+			],
+			action: () => { show_shortcut_settings_window(); },
+			description: localize("View and change keyboard shortcuts."),
+		},
+		{
+			emoji_icon: "💨",
+			label: localize("&Airbrush"),
+			speech_recognition: [
+				"airbrush", "air brush", "spray", "spray paint", "spray can",
+			],
+			action: () => { select_tool(get_tool_by_id(TOOL_AIRBRUSH)); },
+			description: localize("Draws using an airbrush of the selected size."),
+		},
 		MENU_DIVIDER,
 		// {
 		// 	label: localize("Extra T&ool Box",
@@ -1419,28 +1574,33 @@ for (const [top_level_menu_key, menu] of Object.entries(menus)) {
 	const top_level_menu_name = top_level_menu_key.replace(/&/, "");
 	const add_literal_navigation_speech_recognition = (menu, ancestor_names) => {
 		for (const menu_item of menu) {
-			if (menu_item !== MENU_DIVIDER) {
-				const menu_item_name = menu_item.label.replace(/&|\.\.\.|\(|\)/g, "");
-				// console.log(menu_item_name);
-				let menu_item_matchers = [menu_item_name];
-				if (/\//.test(menu_item_name)) {
-					menu_item_matchers = [
-						menu_item_name,
-						menu_item_name.replace(/\//, " "),
-						menu_item_name.replace(/\//, " and "),
-						menu_item_name.replace(/\//, " or "),
-						menu_item_name.replace(/\//, " slash "),
-					];
-				}
-				menu_item_matchers = menu_item_matchers.map((menu_item_matcher) => {
-					return `${ancestor_names} ${menu_item_matcher}`;
-				});
-				menu_item.speech_recognition = (menu_item.speech_recognition || []).concat(menu_item_matchers);
-				// console.log(menu_item_matchers, menu_item.speech_recognition);
+			if (menu_item === MENU_DIVIDER) {
+				continue;
+			}
+			if (menu_item.radioItems) {
+				add_literal_navigation_speech_recognition(menu_item.radioItems, ancestor_names);
+				continue;
+			}
+			const menu_item_name = menu_item.label.replace(/&|\.\.\.|\(|\)/g, "");
+			// console.log(menu_item_name);
+			let menu_item_matchers = [menu_item_name];
+			if (/\//.test(menu_item_name)) {
+				menu_item_matchers = [
+					menu_item_name,
+					menu_item_name.replace(/\//, " "),
+					menu_item_name.replace(/\//, " and "),
+					menu_item_name.replace(/\//, " or "),
+					menu_item_name.replace(/\//, " slash "),
+				];
+			}
+			menu_item_matchers = menu_item_matchers.map((menu_item_matcher) => {
+				return `${ancestor_names} ${menu_item_matcher}`;
+			});
+			menu_item.speech_recognition = (menu_item.speech_recognition || []).concat(menu_item_matchers);
+			// console.log(menu_item_matchers, menu_item.speech_recognition);
 
-				if (menu_item.submenu) {
-					add_literal_navigation_speech_recognition(menu_item.submenu, `${ancestor_names} ${menu_item_name}`);
-				}
+			if (menu_item.submenu) {
+				add_literal_navigation_speech_recognition(menu_item.submenu, `${ancestor_names} ${menu_item_name}`);
 			}
 		}
 	};
@@ -1449,115 +1609,3 @@ for (const [top_level_menu_key, menu] of Object.entries(menus)) {
 
 export { menus };
 
-/**
- * Expands a shortcut label into an object with the label and a corresponding ARIA key shortcuts value.
- * Could handle "CtrlOrCmd" like Electron does, here, or just treat "Ctrl" as control or command.
- * Of course it would be more ergonomic if OS-GUI.js handled this sort of thing,
- * and I have thought about rewriting the OS-GUI API to mimic Electron's.
- * I also have some munging logic in electron-main.js related to this.
- * @param {string} shortcutLabel
- * @returns {{shortcutLabel?: string, ariaKeyShortcuts?: string}}
- */
-function shortcut(shortcutLabel) {
-	if (!shortcutLabel) return {};
-	const ariaKeyShortcuts = shortcutLabel.replace(/Ctrl/g, "Control").replace(/\bDel\b/, "Delete");//.replace(/\bEsc\b/, "Escape").replace(/\bIns\b/, "Insert");
-	if (!validateAriaKeyshortcuts(ariaKeyShortcuts)) {
-		console.error(`Invalid ARIA key shortcuts: ${JSON.stringify(ariaKeyShortcuts)} (from shortcut label: ${JSON.stringify(shortcutLabel)}) (or validator is incomplete)`);
-	}
-	return {
-		shortcutLabel,
-		ariaKeyShortcuts,
-	};
-}
-
-/**
- * Validates an aria-keyshortcuts value.
- *
- * AI-generated code (ChatGPT), prompted with the spec section: https://w3c.github.io/aria/#aria-keyshortcuts
- *
- * @param {string} value
- * @returns {boolean} valid
- */
-function validateAriaKeyshortcuts(value) {
-	// Define valid modifier and non-modifier keys based on UI Events KeyboardEvent key Values spec
-	const modifiers = ["Alt", "Control", "Shift", "Meta", "AltGraph"];
-	const nonModifiers = [
-		"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
-		"N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
-		"1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-		"Delete",
-		"Enter", "Tab", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown",
-		"PageUp", "PageDown", "End", "Home", "Escape", "Space", "Plus",
-		"Minus", "Comma", "Period", "Slash", "Backslash", "Quote", "Semicolon",
-		"BracketLeft", "BracketRight", "F1", "F2", "F3", "F4", "F5", "F6",
-		"F7", "F8", "F9", "F10", "F11", "F12",
-		// Add more non-modifier keys as needed
-	];
-
-	// Split the value into individual shortcuts
-	const shortcuts = value.split(" ");
-
-	// Function to validate a single shortcut
-	function validateShortcut(shortcut) {
-		const keys = shortcut.split("+");
-
-		if (keys.length === 0) {
-			return false;
-		}
-
-		let nonModifierFound = false;
-
-		// Check each key in the shortcut
-		for (let i = 0; i < keys.length; i++) {
-			const key = keys[i];
-
-			if (modifiers.includes(key)) {
-				if (nonModifierFound) {
-					// Modifier key found after a non-modifier key
-					return false;
-				}
-			} else if (nonModifiers.includes(key)) {
-				if (nonModifierFound) {
-					// Multiple non-modifier keys found
-					return false;
-				}
-				nonModifierFound = true;
-			} else {
-				// Invalid key
-				return false;
-			}
-		}
-
-		// Ensure at least one non-modifier key is present
-		return nonModifierFound;
-	}
-
-	// Validate all shortcuts
-	for (let i = 0; i < shortcuts.length; i++) {
-		if (!validateShortcut(shortcuts[i])) {
-			return false;
-		}
-	}
-
-	return true;
-}
-
-/** @type {[string, boolean][]} */
-const ariaKeyShortcutsTestCases = [
-	["Control+A Shift+Alt+B", true],
-	["Control+Shift+1", true],
-	["Shift+Alt+T Control+5", true],
-	["T", true],
-	["ArrowLeft", true],
-	["Shift+T Alt+Control", false],
-	["T+Shift", false],
-	["Alt", false],
-	["IncredibleKey", false],
-	["Ctrl+Shift+A", false],
-];
-for (const [ariaKeyShortcuts, expectedValidity] of ariaKeyShortcutsTestCases) {
-	const returnedValidity = validateAriaKeyshortcuts(ariaKeyShortcuts);
-	if (returnedValidity !== expectedValidity) {
-		console.error(`validateAriaKeyshortcuts("${ariaKeyShortcuts}") returned ${returnedValidity} but expected ${expectedValidity}`);
-	}
-}

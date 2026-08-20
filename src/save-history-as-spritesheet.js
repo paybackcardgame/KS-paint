@@ -1,5 +1,5 @@
 // @ts-check
-/* global localize, main_canvas, systemHooks, file_name, system_file_handle, undos, current_history_node */
+/* global localize, main_canvas, systemHooks, file_name, system_file_handle, current_history_node */
 
 // This script exports the document history as a spritesheet,
 // in guaranteed quality, and supporting transparency,
@@ -22,7 +22,10 @@ const { make_canvas } = await import("../src/helpers.js");
 
 const width = main_canvas.width;
 const height = main_canvas.height;
-const frame_history_nodes = [...undos, current_history_node];
+const frame_history_nodes = [];
+for (let node = current_history_node; node; node = node.parent) {
+	frame_history_nodes.unshift(node);
+}
 const sheet_canvas = make_canvas(width * frame_history_nodes.length, height);
 let x = 0;
 for (const frame_history_node of frame_history_nodes) {

@@ -5,9 +5,10 @@ import { $Swatch, update_$swatch } from "./$ColorBox.js";
 import { $DialogWindow } from "./$ToolWindow.js";
 // import { localize } from "./app-localization.js";
 import { basic_colors, custom_colors } from "./color-data.js";
-import { detect_monochrome, make_monochrome_palette, show_error_message, undoable } from "./functions.js";
+import { detect_monochrome, make_monochrome_palette, show_error_message, undoable, undoable_option_change } from "./functions.js";
 import { $G, get_help_folder_icon, get_rgba_from_color, make_canvas, render_access_key, rgb_to_hsl } from "./helpers.js";
 import { replace_color_globally } from "./image-manipulation.js";
+import { composite_layers, get_active_layer_context } from "./layers.js";
 
 // @TODO:
 // - Persist custom colors list across reloads? It's not very persistent in real Windows...
@@ -45,7 +46,6 @@ try {
 if (dev_edit_colors) {
 	$(() => {
 		show_edit_colors_window();
-		$(".define-custom-colors-button").click();
 		$edit_colors_window.css({
 			left: 80,
 			top: 50,
@@ -132,9 +132,13 @@ function show_edit_colors_window($swatch_to_edit, color_selection_slot_to_edit) 
 					name: "Recolor",
 					icon: get_help_folder_icon("p_color.png"),
 				}, () => {
-					recolor(main_ctx, main_monochrome_info.presentNonTransparentRGBAs);
+					recolor(get_active_layer_context(), main_monochrome_info.presentNonTransparentRGBAs);
+					composite_layers();
 					if (selection && selection.canvas) {
 						recolor(selection.canvas.ctx, selection_monochrome_info.presentNonTransparentRGBAs);
+						for (const slice of selection.layer_slices || []) {
+							recolor(slice.canvas.ctx, selection_monochrome_info.presentNonTransparentRGBAs);
+						}
 						// I feel like this shouldn't be necessary, if I'm not changing the size, but it makes it work:
 						selection.replace_source_canvas(selection.canvas);
 					}
@@ -153,8 +157,10 @@ function show_edit_colors_window($swatch_to_edit, color_selection_slot_to_edit) 
 		} else {
 			palette[swatch_index] = color;
 			update_$swatch($swatch_to_edit, color);
-			selected_colors[color_selection_slot_to_edit] = color;
-			$G.triggerHandler("option-changed");
+			undoable_option_change({ name: "Select Color", icon: get_help_folder_icon("p_color.png") }, () => {
+				selected_colors[color_selection_slot_to_edit] = color;
+				$G.triggerHandler("option-changed");
+			});
 			window.console?.log(`Updated palette: ${palette.map(() => "%c█").join("")}`, ...palette.map((color) => `color: ${color};`));
 		}
 	});
@@ -262,8 +268,10 @@ function choose_color(initial_color, callback) {
 		return $color_grid;
 	};
 	const $left_right_split = $(`<div class="left-right-split">`).appendTo($w.$main);
-	const $left = $(`<div class="left-side">`).appendTo($left_right_split);
-	const $right = $(`<div class="right-side">`).appendTo($left_right_split).hide();
+	const $left = $(`<div class="left-side">`).appendTo($left_right_split).hide();
+	const $right = $(`<div class="right-side">`).appendTo($left_right_split).show();
+	// Simplified picker: skip Basic/Custom color grids; open the spectrum view directly.
+	$w.addClass("defining-custom-colors simplified-custom-colors");
 	$left.append(`<label for="basic-colors">${render_access_key("&Basic colors:")}</label>`);
 	const $basic_colors_grid = make_color_grid(basic_colors, "basic-colors").appendTo($left);
 	$left.append(`<label for="custom-colors">${render_access_key("&Custom colors:")}</label>`);
@@ -288,28 +296,12 @@ function choose_color(initial_color, callback) {
 	const $define_custom_colors_button = $(`<button class="define-custom-colors-button" type="button">`)
 		.html(render_access_key("&Define Custom Colors >>"))
 		.appendTo($left)
-		.on("click", (e) => {
-			// prevent the form from submitting
-			// @TODO: instead, prevent the form's submit event in $Window.js in os-gui (or don't have a form? idk)
-			e.preventDefault();
-
-			$right.show();
-			$w.addClass("defining-custom-colors"); // for mobile layout
-			$define_custom_colors_button.attr("disabled", "disabled");
-			// assuming small viewport implies mobile implies an onscreen keyboard,
-			// and that you probably don't want to use the keyboard to choose colors
-			if ($w.width() >= 300) {
-				inputs_by_component_letter.h.focus();
-			}
-			maybe_reenable_button_for_mobile_navigation();
-		});
+		.hide()
+		.attr("disabled", "disabled");
 
 	// for mobile layout, re-enable button because it's a navigation button in that case, rather than one-time expand action
 	const maybe_reenable_button_for_mobile_navigation = () => {
-		// if ($right.is(":hidden")) {
-		if ($w.width() < 300 || document.body.classList.contains("enlarge-ui")) {
-			$define_custom_colors_button.removeAttr("disabled");
-		}
+		// Simplified mode always shows the spectrum; keep Define button hidden.
 	};
 	$(window).on("resize", maybe_reenable_button_for_mobile_navigation);
 
@@ -620,13 +612,10 @@ function choose_color(initial_color, callback) {
 			// @TODO: instead, prevent the form's submit event in $Window.js in os-gui (or don't have a form? idk)
 			event.preventDefault();
 
-			const color = get_current_color();
-			custom_colors[custom_colors_index] = color;
-			// console.log(custom_colors_swatches_reordered, custom_colors_index, custom_colors_swatches_reordered[custom_colors_index]));
-			update_$swatch($(custom_colors_swatches_list_order[custom_colors_index]), color);
-			custom_colors_index = (custom_colors_index + 1) % custom_colors.length;
-
-			$w.removeClass("defining-custom-colors"); // for mobile layout
+			// Apply directly to the color bar / palette swatch that opened this dialog
+			// (skip the in-dialog Custom colors grid entirely).
+			callback(get_current_color());
+			$w.close();
 		});
 
 	$w.$Button(localize("OK"), () => {
@@ -637,34 +626,16 @@ function choose_color(initial_color, callback) {
 		$w.close();
 	});
 
-	$left.append($w.$buttons);
-
-	// Initially select the first color cell that matches the color to edit, if any
-	// (first in the basic colors, then in the custom colors otherwise.
-	// This works implicitly, since basic colors come before custom colors in the DOM.)
-	for (const swatch_el of $left.find(".swatch").toArray()) {
-		if (get_rgba_from_color(swatch_el.dataset.color).join(",") === get_rgba_from_color(initial_color).join(",")) {
-			select($(swatch_el));
-			swatch_el.focus();
-			break;
-		}
-	}
-	custom_colors_index = Math.max(0, custom_colors_swatches_list_order.indexOf(
-		$custom_colors_grid.find(".swatch.selected")[0]
-	));
-	// If no color cell matches the color to edit,
-	// focus the first color cell, without changing the selected color value as displayed if you expand the dialog.
-	// This supports workflows:
-	// 1. Make a custom color, without saving it to the custom colors list, hit OK, then edit this new color.
-	// 2. Use the eye dropper tool to select a color in an image, then edit it or see the RGB/HSL values.
-	// (Also test adding to custom colors, without editing, a color not already in the custom colors list.
-	// I swear it added the wrong color once...)
-	if ($w.find(".swatch:focus").length === 0) {
-		$w.find(".swatch").first().focus();
-	}
+	$right.append($w.$buttons);
 
 	set_color(initial_color);
 	update_inputs("hslrgb");
+	draw();
+
+	// Focus the spectrum controls (Basic colors UI is skipped).
+	if ($w.width() >= 300) {
+		inputs_by_component_letter.h.focus();
+	}
 
 	$w.center();
 }

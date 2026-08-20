@@ -104,14 +104,19 @@ function $ToolBox(tools, is_extras) {
 	$c.update_selected_tool = () => {
 		$buttons.removeClass("selected");
 		selected_tools.forEach((selected_tool) => {
-			selected_tool.$button.addClass("selected");
+			if (selected_tool.$button) {
+				selected_tool.$button.addClass("selected");
+			}
 		});
 		$tool_options.children().detach();
-		$tool_options.append(selected_tool.$options);
+		if (selected_tool.$options) {
+			$tool_options.append(selected_tool.$options);
+		}
 		$tool_options.children().trigger("update");
 		$canvas.css({
 			cursor: make_css_cursor(...selected_tool.cursor),
 		});
+		$G.trigger("tool-changed");
 	};
 	$c.update_selected_tool();
 

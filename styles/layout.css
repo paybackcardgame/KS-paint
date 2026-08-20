@@ -202,6 +202,13 @@ html, body, .jspaint {
 	min-width: 0px;
 	padding-left: 3px;
 }
+.status-zoom {
+	flex: 0 0 56px;
+	min-width: 0px;
+	padding-left: 3px;
+	padding-right: 4px;
+	justify-content: flex-end;
+}
 
 .enlarge-ui .color-button {
 	width: 25px;
@@ -327,6 +334,44 @@ whereas it breaks component docking calculations if used to shift the colors box
 .menus {
 	/* @TODO: make this part of os-gui; note that Explorer does overflow differently though */
 	flex-wrap: wrap;
+	align-items: center;
+}
+
+.fill-tool-header-options {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-left: 12px;
+	font-size: 12px;
+	white-space: nowrap;
+}
+.fill-tool-header-options[hidden] {
+	display: none;
+}
+.fill-tool-header-options .choose-fill-tolerance {
+	flex-direction: row;
+	align-items: center;
+	width: auto;
+	padding: 0;
+	gap: 6px;
+}
+.fill-tool-header-options .fill-tolerance-slider {
+	width: 80px;
+}
+/* 98.css draws the box on label::before to the left of the text; keep that area inside the label so it is clickable. */
+.fill-tool-header-options input[type="checkbox"] + label {
+	margin-left: 0;
+	padding-left: calc(var(--checkbox-width, 13px) + var(--radio-label-spacing, 6px));
+	min-height: var(--checkbox-width, 13px);
+	line-height: var(--checkbox-width, 13px);
+}
+.fill-tool-header-options input[type="checkbox"] + label::before {
+	left: 0;
+	top: 0;
+}
+.fill-tool-header-options input[type="checkbox"]:checked + label::after {
+	left: var(--checkmark-left, 3px);
+	top: var(--checkmark-top, 3px);
 }
 
 .component-area {
@@ -451,6 +496,314 @@ whereas it breaks component docking calculations if used to shift the colors box
 	border: 0;
 }
 
+.handle.rotate-handle {
+	display: none;
+}
+.selection.y-rotate-mode .handle,
+.selection.y-rotate-mode .grab-region {
+	cursor: grab !important;
+}
+
+.color-history {
+	display: none;
+	flex-wrap: wrap;
+	align-content: flex-start;
+	gap: 0;
+	margin-left: 4px;
+	padding-left: 4px;
+	border-left: 1px solid var(--ButtonShadow, #808080);
+	max-width: 128px;
+	max-height: 32px;
+	overflow: hidden;
+}
+.colors-component.tall .color-history {
+	margin-left: 0;
+	margin-top: 4px;
+	padding-left: 0;
+	padding-top: 4px;
+	border-left: 0;
+	border-top: 1px solid var(--ButtonShadow, #808080);
+	max-width: 32px;
+	max-height: 128px;
+	flex-direction: column;
+}
+.color-history .color-button {
+	opacity: 0.95;
+}
+
+.pointer-color-panel {
+	position: fixed;
+	z-index: 50000;
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 4px;
+	padding: 6px;
+	background: var(--ButtonFace, #c0c0c0);
+	box-sizing: border-box;
+	pointer-events: auto;
+}
+.pointer-color-panel-row {
+	display: flex;
+	flex-direction: row;
+	align-items: flex-start;
+	height: auto;
+}
+.pointer-color-panel .current-colors {
+	position: relative;
+	width: 30px;
+	height: 31px;
+	margin-inline-end: 4px;
+	flex-shrink: 0;
+}
+.pointer-color-panel .palette {
+	display: flex;
+	flex-flow: row wrap;
+	height: auto;
+}
+.pointer-color-panel .color-button,
+.pointer-color-panel .color-selection {
+	margin-left: 1px;
+}
+.pointer-color-panel-history {
+	display: flex;
+	flex-wrap: wrap;
+	align-content: flex-start;
+	gap: 0;
+	max-width: 100%;
+}
+.pointer-color-panel-edit {
+	align-self: stretch;
+	font-size: 11px;
+	padding: 2px 6px;
+}
+
+.choose-fill-tolerance {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 2px;
+	padding: 2px 4px;
+	width: 100%;
+	box-sizing: border-box;
+	font-size: 11px;
+}
+.fill-tolerance-label {
+	display: flex;
+	justify-content: space-between;
+	gap: 4px;
+}
+.fill-tolerance-slider {
+	width: 100%;
+}
+
+.layers-component {
+	width: 236px;
+}
+.layers-box {
+	width: 226px;
+	padding: 5px;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-family: "Pixelated MS Sans Serif", Tahoma, sans-serif;
+	font-size: 11px;
+	color: var(--WindowText, #000);
+}
+.layer-opacity {
+	display: grid;
+	grid-template-columns: auto 1fr 44px;
+	align-items: center;
+	gap: 6px;
+	min-height: 22px;
+}
+.layer-opacity-label {
+	white-space: nowrap;
+}
+.layer-opacity-slider {
+	min-width: 0;
+	width: 100%;
+	margin: 0;
+}
+.layer-opacity-value {
+	width: 44px;
+	min-width: 44px;
+	height: 20px;
+	margin: 0;
+	padding: 0 3px;
+	box-sizing: border-box;
+	text-align: right;
+	font: inherit;
+	color: var(--WindowText, #000);
+	background: var(--Window, #fff);
+}
+.layers-list {
+	position: relative;
+	min-height: 148px;
+	max-height: 360px;
+	overflow: auto;
+	background: var(--Window, white);
+	-webkit-user-select: none;
+	-moz-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
+}
+.layers-list.reordering {
+	cursor: grabbing;
+}
+.layers-list.reordering .layer-name {
+	cursor: grabbing;
+}
+.layer-row {
+	display: grid;
+	grid-template-columns: 44px 40px minmax(0, 1fr);
+	align-items: stretch;
+	min-height: 40px;
+	background: var(--Window, #fff);
+	color: var(--WindowText, #000);
+	border-bottom: 1px solid var(--ButtonShadow, #808080);
+	cursor: grab;
+	touch-action: none;
+	transition: transform 160ms ease;
+}
+.layer-row.active {
+	background: var(--Hilight, navy);
+	color: var(--HilightText, white);
+}
+.layer-row.dragging {
+	position: relative;
+	z-index: 2;
+	cursor: grabbing;
+	opacity: 0.98;
+	box-shadow: 1px 1px 0 var(--ButtonHighlight, #fff) inset, -1px -1px 0 var(--ButtonShadow, #808080) inset, 2px 3px 8px rgba(0, 0, 0, 0.35);
+	transition: none;
+}
+.layer-row.editing {
+	cursor: text;
+}
+.layer-gutter {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	align-items: stretch;
+	background: var(--ButtonFace, #c0c0c0);
+	color: var(--ButtonText, #000);
+	border-right: 1px solid var(--ButtonShadow, #808080);
+}
+.layer-row.active .layer-gutter,
+.layer-row.dragging .layer-gutter {
+	background: var(--ButtonFace, #c0c0c0);
+	color: var(--ButtonText, #000);
+}
+.layers-box .layer-icon-button,
+.layers-box .layer-icon-button:not(:disabled):active,
+.layers-box .layer-icon-button:focus {
+	min-width: 0;
+	min-height: 0;
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	padding: 0;
+	background: transparent;
+	box-shadow: none;
+	border: 0;
+	outline: none;
+	border-radius: 0;
+	color: inherit;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.layers-box .layer-icon-button:focus-visible {
+	outline: 1px dotted var(--WindowText, #000);
+	outline-offset: -2px;
+}
+.layer-gutter .layer-icon-button + .layer-icon-button {
+	border-left: 1px solid var(--ButtonShadow, #808080);
+}
+.layer-icon-button svg {
+	display: block;
+	pointer-events: none;
+}
+.layer-row.layer-hidden .layer-preview,
+.layer-row.layer-hidden .layer-name {
+	opacity: 0.45;
+}
+.layer-preview {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 3px;
+}
+.layer-thumbnail {
+	width: 32px;
+	height: 32px;
+	box-sizing: border-box;
+	border: 1px solid var(--ButtonShadow, #808080);
+	background-color: #fff;
+	background-image:
+		linear-gradient(45deg, #c0c0c0 25%, transparent 25%),
+		linear-gradient(-45deg, #c0c0c0 25%, transparent 25%),
+		linear-gradient(45deg, transparent 75%, #c0c0c0 75%),
+		linear-gradient(-45deg, transparent 75%, #c0c0c0 75%);
+	background-size: 8px 8px;
+	background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+	image-rendering: pixelated;
+}
+.layer-row.active .layer-thumbnail {
+	outline: 1px solid var(--HilightText, white);
+	outline-offset: 0;
+}
+.layer-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	padding: 0 6px 0 2px;
+	cursor: text;
+}
+.layer-name-input {
+	width: 100%;
+	min-width: 0;
+	height: 22px;
+	margin: 0;
+	box-sizing: border-box;
+	font: inherit;
+	color: var(--WindowText, #000);
+	background: var(--Window, #fff);
+	-webkit-user-select: text;
+	-moz-user-select: text;
+	-ms-user-select: text;
+	user-select: text;
+}
+.layer-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: 2px;
+}
+.layer-buttons button {
+	min-width: 28px;
+	width: 28px;
+	height: 24px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.layer-buttons button:not(:disabled):active {
+	padding: 1px 0 0 1px;
+}
+.layer-buttons button svg {
+	display: block;
+	pointer-events: none;
+}
+.layer-lock-button.pressed {
+	box-shadow: var(--border-sunken-outer, inset 1px 1px var(--WindowFrame, #0a0a0a), inset -1px -1px var(--ButtonHighlight, #fff)), var(--border-sunken-inner, inset 2px 2px var(--ButtonShadow, #808080), inset -2px -2px var(--ButtonFace, #dfdfdf));
+}
+
 .edit-colors-window .color-grid {
 	width: 222px;
 	display: grid;
@@ -532,6 +885,26 @@ whereas it breaks component docking calculations if used to shift the colors box
 	bottom: 5px;
 	right: 5px/*rtl:ignore*/;
 	width: 213px;
+}
+/* Spectrum-only picker (no Basic/Custom color grids) */
+.edit-colors-window.simplified-custom-colors .left-side {
+	display: none !important;
+}
+.edit-colors-window.simplified-custom-colors .right-side {
+	display: block !important;
+	min-height: 330px;
+	padding-bottom: 70px;
+	box-sizing: border-box;
+}
+.edit-colors-window.simplified-custom-colors .window-content .add-to-custom-colors-button {
+	bottom: 40px;
+}
+.edit-colors-window.simplified-custom-colors .window-content .button-group {
+	position: absolute;
+	bottom: 8px;
+	left: 5px/*rtl:ignore*/;
+	right: 5px/*rtl:ignore*/;
+	justify-content: flex-end;
 }
 .edit-colors-window .left-side label {
 	display: block;
@@ -918,6 +1291,47 @@ whereas it breaks component docking calculations if used to shift the colors box
 }
 .storage-manager .remove-button {
 	margin-left: 15px;
+}
+
+.shortcut-settings-window .shortcut-settings-note {
+	margin: 0 0 8px;
+	max-width: 420px;
+	line-height: 1.35;
+}
+.shortcut-filter {
+	width: 100%;
+	margin-bottom: 8px;
+	box-sizing: border-box;
+}
+.shortcut-list {
+	width: 420px;
+	height: 320px;
+	overflow: auto;
+	background: var(--ButtonFace, #c0c0c0);
+	padding: 2px;
+}
+.shortcut-group {
+	padding: 4px 6px 2px;
+	font-weight: bold;
+}
+.shortcut-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 2px 6px;
+}
+.shortcut-name {
+	flex: 1;
+	min-width: 0;
+}
+.shortcut-bind {
+	min-width: 140px;
+	text-align: left;
+	font-family: monospace;
+}
+.shortcut-bind.recording {
+	outline: 1px dotted var(--Hilight, #000080);
+	font-style: italic;
 }
 
 .history-window .window-content {
