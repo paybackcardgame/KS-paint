@@ -27,7 +27,6 @@ let $opacity_input = null;
 /** @type {JQuery<HTMLInputElement> | null} */
 let $opacity_value = null;
 /** @type {JQuery<HTMLButtonElement> | null} */
-let $lock_button = null;
 /** @type {JQuery<HTMLButtonElement> | null} */
 let $merge_button = null;
 /** @type {JQuery<HTMLButtonElement> | null} */
@@ -176,15 +175,6 @@ function update_selection_ui() {
 	const percent = opacity_percent(active?.opacity ?? 1);
 	$opacity_input.val(String(percent));
 	$opacity_value.val(`${percent}%`);
-	if ($lock_button) {
-		const locked = !!active?.locked;
-		$lock_button.toggleClass("pressed", locked);
-		$lock_button.attr({
-			title: locked ? "Unlock layer" : "Lock layer",
-			"aria-label": locked ? "Unlock layer" : "Lock layer",
-			"aria-pressed": String(locked),
-		});
-	}
 	if ($merge_button) {
 		const index = layers.findIndex((layer) => layer.id === active_layer_id);
 		$merge_button.prop("disabled", index <= 0);
@@ -681,20 +671,6 @@ function $LayersBox() {
 		"aria-label": "Layers",
 	});
 	const $buttons = $(E("div")).addClass("layer-buttons");
-	const $lock = /** @type {JQuery<HTMLButtonElement>} */ ($(E("button")).attr({
-		type: "button",
-		title: "Lock layer",
-		"aria-label": "Lock layer",
-		"aria-pressed": "false",
-	}).addClass("layer-lock-button").html(LOCK_SVG).on("click", () => {
-		const active = layers.find((layer) => layer.id === active_layer_id);
-		if (!active) {
-			return;
-		}
-		run_layer_action(active.locked ? "Unlock Layer" : "Lock Layer", () => {
-			set_layer_locked(active.id, !active.locked);
-		});
-	}));
 	const $merge = /** @type {JQuery<HTMLButtonElement>} */ ($(E("button")).attr({
 		type: "button",
 		title: "Merge down",
@@ -715,7 +691,7 @@ function $LayersBox() {
 		title: "Delete layer",
 		"aria-label": "Delete layer",
 	}).addClass("layer-delete-button").html(DELETE_SVG).on("click", () => run_layer_action("Delete Layer", () => delete_layer())));
-	$buttons.append($lock, $merge, $duplicate, $new, $delete);
+	$buttons.append($merge, $duplicate, $new, $delete);
 	$content.append($opacity_bar, $list, $buttons);
 
 	$opacity.on("input", () => {
@@ -749,7 +725,6 @@ function $LayersBox() {
 	$layers_list = $list;
 	$opacity_input = $opacity;
 	$opacity_value = $value;
-	$lock_button = $lock;
 	$merge_button = $merge;
 	$delete_button = $delete;
 
