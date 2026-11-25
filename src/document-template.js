@@ -504,11 +504,43 @@ async function import_template_from_file() {
 	});
 }
 
+/**
+ * File > Load Default Template. Loads the template bundled with the site (templates/default.jspaint-template),
+ * ignoring any default saved in this browser, and applies it to a new document.
+ */
+async function load_bundled_default_template_into_document() {
+	let template;
+	try {
+		template = await load_bundled_default_template();
+		if (!template) {
+			throw new Error("The bundled default template could not be loaded.");
+		}
+	} catch (error) {
+		show_error_message("The default template could not be loaded.", error);
+		return;
+	}
+	are_you_sure(() => {
+		cancel_pending_default_template();
+		$G.triggerHandler("session-update");
+		new_local_session();
+		reset_file();
+		apply_workspace_template(template, {
+			history_name: "Load Default Template",
+			history_icon: "p_open.png",
+		}).then(() => {
+			$G.triggerHandler("session-update");
+		}).catch((error) => {
+			show_error_message("The default template could not be applied.", error);
+		});
+	});
+}
+
 export {
 	apply_default_template_or_blank,
 	cancel_pending_default_template,
 	collect_workspace_template,
 	import_template_from_file,
+	load_bundled_default_template_into_document,
 	save_as_default_template,
 	save_template_to_file
 };

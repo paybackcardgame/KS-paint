@@ -5,7 +5,7 @@
 import { OnCanvasTextBox } from "./OnCanvasTextBox.js";
 import { show_layers_box, toggle_layers_box } from "./$LayersBox.js";
 import { show_edit_colors_window } from "./edit-colors.js";
-import { import_template_from_file, save_as_default_template, save_template_to_file } from "./document-template.js";
+import { import_template_from_file, load_bundled_default_template_into_document, save_as_default_template, save_template_to_file } from "./document-template.js";
 import { palette_formats } from "./file-format-data.js";
 import { are_you_sure, change_url_param, choose_file_to_paste, clear, delete_selection, deselect, duplicate_layer_and_select_contents, edit_copy, edit_cut, edit_paste, file_export_as, file_export_png, file_load_from_url, file_new, file_open, file_print, file_save, file_save_as, get_tool_by_id, image_attributes, image_flip_and_rotate, image_invert_colors, image_stretch_and_skew, redo, render_history_as_gif, sanity_check_blob, save_selection_to_file, select_all, select_tool, set_magnification, show_about_paint, show_custom_zoom_window, show_document_history, show_file_format_errors, show_multi_user_setup_dialog, show_news, toggle_grid, toggle_thumbnail, undo, undoable, view_bitmap, apply_named_palette } from "./functions.js";
 import { show_help } from "./help.js";
@@ -113,6 +113,14 @@ const menus = {
 			],
 			action: () => { import_template_from_file(); },
 			description: localize("Loads a template, replacing the current layers, colors, tools, and shortcuts."),
+		},
+		{
+			label: localize("Load Default Te&mplate"),
+			speech_recognition: [
+				"load default template", "load the default template", "open default template", "reset to default template",
+			],
+			action: () => { load_bundled_default_template_into_document(); },
+			description: localize("Loads the site's default template, replacing the current layers, colors, tools, and shortcuts."),
 		},
 		MENU_DIVIDER,
 		{
