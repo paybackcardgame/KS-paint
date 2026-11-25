@@ -119,7 +119,10 @@ class LocalSession {
 			this.save_image_to_storage_immediately();
 			await this.save_history_to_storage_immediately();
 		};
-		localStore.get(ls_key, (err, uri) => {
+		// localStore.get calls back synchronously, which would run before `current_session = new LocalSession(...)`
+		// has assigned this session, making the check below bail out and skip restoring the saved image.
+		// Deferring to a microtask lets the assignment happen first.
+		queueMicrotask(() => localStore.get(ls_key, (err, uri) => {
 			if (this._ended || current_session !== this) {
 				return;
 			}
@@ -183,7 +186,7 @@ class LocalSession {
 				// the file after it appears.
 				this._ready_to_save_history = true;
 			}
-		});
+		}));
 		$G.on("session-update.session-hook", () => {
 			this.save_image_to_storage_soon();
 			this.save_history_to_storage_soon();

@@ -386,7 +386,8 @@ async function load_default_template() {
  */
 async function load_bundled_default_template() {
 	try {
-		const response = await fetch(BUNDLED_DEFAULT_TEMPLATE_URL);
+		// "no-cache" revalidates with the server, so visitors don't get a stale copy after the template is updated.
+		const response = await fetch(BUNDLED_DEFAULT_TEMPLATE_URL, { cache: "no-cache" });
 		if (!response.ok) {
 			throw new Error(`Template request failed with status ${response.status}.`);
 		}
@@ -402,12 +403,17 @@ async function load_bundled_default_template() {
 /**
  * Used by File > New and first-open. Returns true if a default template was applied.
  * Aborts if a file or session image is opened while this is still loading.
+ * On first open (prefer_bundled), the template bundled with the site wins, so every visitor
+ * starts from the site's template. File > New prefers a default saved in this browser.
+ * @param {{prefer_bundled?: boolean}} [options]
  * @returns {Promise<boolean>}
  */
-async function apply_default_template_or_blank() {
+async function apply_default_template_or_blank({ prefer_bundled = false } = {}) {
 	const generation = ++default_template_apply_generation;
 	try {
-		const template = await load_default_template() || await load_bundled_default_template();
+		const template = prefer_bundled ?
+			(await load_bundled_default_template() || await load_default_template()) :
+			(await load_default_template() || await load_bundled_default_template());
 		if (generation !== default_template_apply_generation) {
 			return false;
 		}

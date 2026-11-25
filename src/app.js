@@ -1350,7 +1350,20 @@ $G.on("cut copy paste", (e) => {
 reset_file();
 
 const opening_file = !!window.initial_system_file_handle;
-const restoring_session = /(?:^|#|,)(?:session|local):.+/i.test(location.hash);
+// A #local: link whose drawing isn't stored in this browser (e.g. a link someone shared)
+// has nothing to restore, so treat it as a fresh visit and open the default template.
+const local_session_is_empty = (() => {
+	const local_match = location.hash.match(/^#?(?:.*,)?local:(.+)$/i);
+	if (!local_match) {
+		return false;
+	}
+	try {
+		return !localStorage.getItem(`image#${local_match[1]}`);
+	} catch (_error) {
+		return true;
+	}
+})();
+const restoring_session = /(?:^|#|,)(?:session|local):.+/i.test(location.hash) && !local_session_is_empty;
 const loading_from_url = /(?:^|#|,)load:/i.test(location.hash);
 
 const restore_stored_canvas_size = () => {
@@ -1382,7 +1395,7 @@ const restore_stored_canvas_size = () => {
 };
 
 if (!opening_file && !restoring_session && !loading_from_url) {
-	apply_default_template_or_blank().then((applied) => {
+	apply_default_template_or_blank({ prefer_bundled: true }).then((applied) => {
 		if (!applied) {
 			restore_stored_canvas_size();
 		}
