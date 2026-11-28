@@ -96,7 +96,7 @@ const menus = {
 				"save as default template", "set default template", "save default template",
 			],
 			action: () => { save_as_default_template(); },
-			description: localize("Saves layers, colors, tools, and shortcuts as the default for new documents."),
+			description: localize("Saves layers, colors, tools, and shortcuts in this browser as a backup for when the site's default template can't be loaded."),
 		},
 		{
 			label: localize("Save &Template"),

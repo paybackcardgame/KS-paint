@@ -1271,7 +1271,8 @@ function file_new() {
 		new_local_session();
 
 		reset_file();
-		apply_default_template_or_blank().then(() => {
+		// File > New opens the site's default template (templates/default.jspaint-template), like first open.
+		apply_default_template_or_blank({ prefer_bundled: true }).then(() => {
 			$G.triggerHandler("session-update"); // autosave
 		}).catch((error) => {
 			show_error_message("Failed to start a new document.", error);

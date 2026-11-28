@@ -403,8 +403,8 @@ async function load_bundled_default_template() {
 /**
  * Used by File > New and first-open. Returns true if a default template was applied.
  * Aborts if a file or session image is opened while this is still loading.
- * On first open (prefer_bundled), the template bundled with the site wins, so every visitor
- * starts from the site's template. File > New prefers a default saved in this browser.
+ * With prefer_bundled (used by both first open and File > New), the template bundled with the site wins,
+ * and a default saved in this browser is only a fallback if the bundled one can't be loaded.
  * @param {{prefer_bundled?: boolean}} [options]
  * @returns {Promise<boolean>}
  */
@@ -455,7 +455,7 @@ async function save_as_default_template() {
 		}, (_error) => { /* ignore */ });
 		showMessageBox({
 			title: localize("Save as Default Template"),
-			message: "Saved. File > New will open this layout, including layers, colors, tools, and shortcuts.",
+			message: "Saved in this browser. File > New still opens the site's default template; this layout is used only if that template can't be loaded. To reuse this layout anywhere, use File > Save Template.",
 			iconID: "info",
 		});
 	} catch (error) {
